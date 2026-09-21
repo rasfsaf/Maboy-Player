@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.egg-info/
+*.db
+.env
+client/.dart_tool/
+client/build/
+client/.flutter-plugins-dependencies
+/maboy.apk
+/maboy.exe
+/*.dll
+/data/
