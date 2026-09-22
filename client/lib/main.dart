@@ -1,12 +1,22 @@
 import 'package:flutter/material.dart';
 
 import 'src/app_controller.dart';
+import 'src/design_system.dart';
 import 'src/home.dart';
+import 'src/services/desktop_shortcuts_service.dart';
+import 'src/services/media_service.dart';
+import 'src/services/share_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await MediaService.init();
   final controller = AppController();
   await controller.load();
+  ShareService.init(
+    onShare: (sharedText) {
+      controller.handleIncomingShare(sharedText);
+    },
+  );
   runApp(MaboyApp(controller: controller));
 }
 
@@ -16,15 +26,12 @@ class MaboyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-        title: 'Maboy',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData.dark(useMaterial3: true).copyWith(
-          scaffoldBackgroundColor: const Color(0xff0d0d0f),
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: const Color(0xffa4efb4),
-            brightness: Brightness.dark,
-          ),
-        ),
-        home: HomePage(controller: controller),
-      );
+    title: 'Maboy',
+    debugShowCheckedModeBanner: false,
+    theme: buildMaboyTheme(),
+    home: DesktopShortcutsWrapper(
+      controller: controller,
+      child: HomePage(controller: controller),
+    ),
+  );
 }
