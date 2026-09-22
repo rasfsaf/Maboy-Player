@@ -700,7 +700,7 @@ class _HomePageState extends State<HomePage> {
                                         width: 46,
                                         height: 46,
                                         decoration: BoxDecoration(
-                                          color: MaboyColors.primary.withValues(
+                                          color: MaboyColors.accent.withValues(
                                             alpha: 0.16,
                                           ),
                                           borderRadius: BorderRadius.circular(
@@ -709,7 +709,7 @@ class _HomePageState extends State<HomePage> {
                                         ),
                                         child: const Icon(
                                           Icons.queue_music,
-                                          color: MaboyColors.primary,
+                                          color: MaboyColors.accent,
                                         ),
                                       ),
                                       title: Text(
@@ -949,7 +949,7 @@ class _TrackRail extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
                           fontWeight: FontWeight.w700,
-                          color: playing ? MaboyColors.primary : null,
+                          color: playing ? MaboyColors.accent : null,
                         ),
                       ),
                       Text(
@@ -988,7 +988,7 @@ class _QuickActionCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Material(
-    color: accent ? MaboyColors.primary : MaboyColors.surface,
+    color: accent ? MaboyColors.accent : MaboyColors.surface,
     borderRadius: BorderRadius.circular(6),
     child: InkWell(
       onTap: onTap,
@@ -997,7 +997,7 @@ class _QuickActionCard extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
         child: Column(
           children: [
-            Icon(icon, color: accent ? Colors.white : MaboyColors.secondary),
+            Icon(icon, color: accent ? Colors.white : MaboyColors.accentDim),
             const SizedBox(height: 8),
             Text(
               label,

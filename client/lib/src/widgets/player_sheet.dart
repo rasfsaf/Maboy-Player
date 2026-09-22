@@ -280,7 +280,7 @@ class PlayerSheet extends StatelessWidget {
                             ? Icons.shuffle_on_outlined
                             : Icons.shuffle,
                         color: controller.isShuffle
-                            ? MaboyColors.primary
+                            ? MaboyColors.accent
                             : MaboyColors.textMuted,
                       ),
                       iconSize: 26,
@@ -463,7 +463,7 @@ class _PlaybackQueueTile extends StatelessWidget {
       title: MarqueeText(
         '${track['title']}',
         style: TextStyle(
-          color: current ? MaboyColors.primary : null,
+          color: current ? MaboyColors.accent : null,
           fontWeight: current ? FontWeight.bold : FontWeight.w600,
         ),
       ),
@@ -477,7 +477,7 @@ class _PlaybackQueueTile extends StatelessWidget {
       ),
       onTap: current ? null : () => controller.playPlaybackQueueEntry(entry),
       trailing: current
-          ? const Icon(Icons.graphic_eq, color: MaboyColors.primary)
+          ? const Icon(Icons.graphic_eq, color: MaboyColors.accent)
           : Row(
               mainAxisSize: MainAxisSize.min,
               children: [

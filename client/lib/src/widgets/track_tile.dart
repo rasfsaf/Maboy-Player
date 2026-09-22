@@ -269,7 +269,7 @@ class TrackTile extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 2),
       child: ListTile(
         selected: isSelected,
-        selectedTileColor: MaboyColors.primary.withValues(alpha: 0.12),
+        selectedTileColor: MaboyColors.accent.withValues(alpha: 0.12),
         leading: leadingWidget,
         title: Row(
           children: [

@@ -320,7 +320,7 @@ class _EqualizerCurvePainter extends CustomPainter {
     canvas.drawPath(
       path,
       Paint()
-        ..color = enabled ? MaboyColors.primary : MaboyColors.textMuted
+        ..color = enabled ? MaboyColors.accent : MaboyColors.textMuted
         ..style = PaintingStyle.stroke
         ..strokeWidth = 3
         ..strokeJoin = StrokeJoin.round,

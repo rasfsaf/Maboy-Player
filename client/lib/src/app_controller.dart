@@ -153,6 +153,17 @@ class AppController extends ChangeNotifier {
   Map<String, dynamic>? get playingTrack =>
       tracks.where((track) => track['id'] == playingId).firstOrNull;
 
+  // Convenience pass-through getters for UI. They don't carry state of their
+  // own — they mirror the underlying audio player so widgets can read state
+  // without poking the player directly.
+  int get positionMs => player.position.inMilliseconds;
+  int get durationMs => player.duration?.inMilliseconds ?? 0;
+  bool get isPlaying => player.playing;
+  String? get currentTrackId => playingId;
+
+  Future<void> next() => playNext();
+  Future<void> previous() => playPrevious();
+
   int get currentPlaybackIndex {
     if (_currentPlaybackIndex >= 0 &&
         _currentPlaybackIndex < _playbackIds.length &&
