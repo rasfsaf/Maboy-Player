@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:maboy/src/app_controller.dart';
 import 'package:maboy/src/design_system.dart';
 import 'package:maboy/src/home.dart';
@@ -7,6 +8,9 @@ import 'package:maboy/src/pages/equalizer_page.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  // Headless tests have no network — disable Google Fonts fetching so the
+  // build falls back to the platform default typeface.
+  GoogleFonts.config.allowRuntimeFetching = false;
 
   testWidgets('desktop library production layout', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1280, 800));

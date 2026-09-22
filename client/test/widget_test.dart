@@ -26,7 +26,7 @@ void main() {
     expect(brand.style?.fontWeight, FontWeight.w900);
     expect(
       Theme.of(tester.element(find.byType(Scaffold))).colorScheme.primary,
-      MaboyColors.primary,
+      MaboyColors.accent,
     );
   });
 

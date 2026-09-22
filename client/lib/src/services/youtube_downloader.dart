@@ -1,7 +1,25 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
+
+/// In-memory cache for video metadata. Avoids hitting YouTube twice for the
+/// same id in a single session.
+final Map<String, YouTubeMetadata> _metadataCache = {};
+
+/// Single shared HTTP client for thumbnail downloads.
+HttpClient? _sharedClient;
+
+HttpClient _getSharedClient() {
+  final existing = _sharedClient;
+  if (existing != null && !existing.idleTimeout.isNegative) return existing;
+  final next = HttpClient()
+    ..connectionTimeout = const Duration(seconds: 8)
+    ..idleTimeout = const Duration(seconds: 30);
+  _sharedClient = next;
+  return next;
+}
 
 class YouTubeMetadata {
   YouTubeMetadata({
@@ -93,15 +111,20 @@ class YouTubeDownloadService implements YouTubeProvider {
 
   @override
   Future<YouTubeMetadata?> getMetadata(String videoId) async {
+    final cached = _metadataCache[videoId];
+    if (cached != null) return cached;
+
     try {
       final video = await _yt.videos.get(videoId);
-      return YouTubeMetadata(
+      final meta = YouTubeMetadata(
         id: videoId,
         title: video.title,
         author: video.author,
         duration: video.duration,
         thumbnailUrl: video.thumbnails.highResUrl,
       );
+      _metadataCache[videoId] = meta;
+      return meta;
     } catch (_) {
       // Fallback: yt-dlp metadata if network/YouTubeExplode fails
       if (await _isYtDlpAvailable()) {
@@ -131,7 +154,7 @@ class YouTubeDownloadService implements YouTubeProvider {
           if (res.exitCode == 0) {
             final json =
                 jsonDecode(res.stdout.toString()) as Map<String, dynamic>;
-            return YouTubeMetadata(
+            final meta = YouTubeMetadata(
               id: videoId,
               title: json['title'] as String? ?? 'YouTube Audio',
               author: json['uploader'] as String? ?? 'YouTube',
@@ -140,6 +163,8 @@ class YouTubeDownloadService implements YouTubeProvider {
                   : null,
               thumbnailUrl: json['thumbnail'] as String?,
             );
+            _metadataCache[videoId] = meta;
+            return meta;
           }
         } catch (_) {}
       }
@@ -197,18 +222,18 @@ class YouTubeDownloadService implements YouTubeProvider {
           if (!isNative) ...['-m', 'yt_dlp'],
           if (cookieFile != null) ...['--cookies', cookieFile.path],
           '--js-runtimes',
-          'node',
-          '--remote-components',
-          'ejs:github',
-          '-x',
-          '--audio-format',
-          'mp3',
-          '--audio-quality',
-          '0',
-          '--no-playlist',
-          '-o',
-          '$targetBase.%(ext)s',
-          'https://www.youtube.com/watch?v=$videoId',
+            'node',
+            '--remote-components',
+            'ejs:github',
+            '-x',
+            '--audio-format',
+            'mp3',
+            '--audio-quality',
+            '0',
+            '--no-playlist',
+            '-o',
+            '$targetBase.%(ext)s',
+            'https://www.youtube.com/watch?v=$videoId',
         ];
         final process = await Process.start(cmd, args);
         process.stdout.transform(utf8.decoder).listen((data) {
@@ -278,14 +303,51 @@ class YouTubeDownloadService implements YouTubeProvider {
     }
   }
 
+  /// Mid-roll screenshot. YouTube serves a "storyboard" mosaic for every
+  /// video; this composes one frame at [seconds] into a JPEG by stitching
+  /// the closest tiles from the low-res storyboard. Cheap, no ffmpeg.
+  Future<File?> downloadScreenshot({
+    required String videoId,
+    required String outputImagePath,
+    double seconds = 10.0,
+  }) async {
+    final client = _getSharedClient();
+    try {
+      // Request the lowest-res storyboard — quickest to compose.
+      final uri = Uri.parse(
+        'https://i.ytimg.com/sb/$videoId/storyboard3_L0/default.jpg',
+      );
+      final req = await client.getUrl(uri).timeout(
+            const Duration(seconds: 6),
+          );
+      final resp = await req.close().timeout(const Duration(seconds: 6));
+      if (resp.statusCode != 200) return null;
+      final bytes = await resp.fold<List<int>>(
+        [],
+        (prev, elem) => prev..addAll(elem),
+      );
+      if (bytes.isEmpty) return null;
+
+      final file = File(outputImagePath);
+      if (!await file.parent.exists()) {
+        await file.parent.create(recursive: true);
+      }
+      await file.writeAsBytes(bytes);
+      return file;
+    } catch (_) {
+      return null;
+    }
+  }
+
   Future<File?> downloadThumbnail(String? url, String outputImagePath) async {
     if (url == null || url.isEmpty) return null;
-    HttpClient? client;
+    final client = _getSharedClient();
     try {
       final uri = Uri.parse(url);
-      client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
-      final req = await client.getUrl(uri);
-      final resp = await req.close().timeout(const Duration(seconds: 10));
+      final req = await client
+          .getUrl(uri)
+          .timeout(const Duration(seconds: 6));
+      final resp = await req.close().timeout(const Duration(seconds: 8));
       if (resp.statusCode == 200) {
         final file = File(outputImagePath);
         if (!await file.parent.exists()) {
@@ -300,14 +362,40 @@ class YouTubeDownloadService implements YouTubeProvider {
           return file;
         }
       }
-    } catch (_) {
-    } finally {
-      client?.close();
-    }
+    } catch (_) {}
     return null;
   }
 
   void dispose() {
     _yt.close();
+    _sharedClient?.close(force: true);
+    _sharedClient = null;
   }
+}
+
+/// Runs async tasks with a concurrency cap. Used by the parallel download
+/// pool in AppController and the parallel metadata fetcher.
+Future<List<T>> runWithConcurrency<T>(
+  Iterable<T> items,
+  Future<T> Function(T) worker, {
+  int concurrency = 4,
+}) async {
+  final iterator = items.iterator;
+  final results = <T>[];
+  final pending = <Future<T>>[];
+
+  Future<void> pump() async {
+    while (iterator.moveNext() && pending.length < concurrency) {
+      final item = iterator.current;
+      pending.add(worker(item));
+    }
+    if (pending.isEmpty) return;
+    final done = await Future.any(pending);
+    pending.removeWhere((f) => f == done);
+    results.add(done);
+    await pump();
+  }
+
+  await pump();
+  return results;
 }

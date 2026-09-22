@@ -8,6 +8,7 @@ import 'pages/secondary_pages.dart';
 import 'widgets/marquee_text.dart';
 import 'widgets/player_sheet.dart';
 import 'widgets/track_tile.dart';
+import 'widgets/transfer_panel.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key, required this.controller});
@@ -456,9 +457,11 @@ class _HomePageState extends State<HomePage> {
                   ),
                 ],
               ),
-        body: MaboyBackdrop(
-          child: Row(
-            children: [
+        body: Stack(
+          children: [
+            MaboyBackdrop(
+              child: Row(
+                children: [
               if (isDesktop)
                 NavigationRail(
                   backgroundColor: MaboyColors.surface.withValues(alpha: 0.92),
@@ -862,6 +865,9 @@ class _HomePageState extends State<HomePage> {
               ),
             ],
           ),
+            ),
+            TransferPanel(log: widget.controller.transferLog),
+          ],
         ),
         bottomNavigationBar: isDesktop
             ? null

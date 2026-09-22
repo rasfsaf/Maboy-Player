@@ -4,6 +4,8 @@ import 'dart:io';
 import 'dart:math';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+
+import 'transfer_log.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -47,12 +49,68 @@ class PlaybackQueueEntry {
 class AppController extends ChangeNotifier {
   final MaboyAudioPlayer player = MaboyAudioPlayer();
   final YouTubeDownloadService ytService = YouTubeDownloadService();
+
+  /// Cap on parallel MP3 downloads. Beyond ~5 YouTube throttles and the
+  /// downloader bursts ECONNRESETs.
+  static const int maxParallelDownloads = 5;
+  final List<Map<String, dynamic>> _downloadQueue = <Map<String, dynamic>>[];
+  final Set<String> _queuedIds = <String>{};
+  int _activeDownloads = 0;
+
+  /// Returns the queue length *excluding* downloads already running.
+  int get pendingDownloadCount => _downloadQueue.length;
+
+  void enqueueYouTubeDownload(Map<String, dynamic> track) {
+    final id = track['id'] as String;
+    if (downloadingIds.contains(id) || _queuedIds.contains(id)) return;
+    _queuedIds.add(id);
+    _downloadQueue.add(track);
+    transferLog.begin(
+      id: id,
+      title: (track['title'] as String?) ?? 'Untitled',
+      kind: TransferKind.download,
+      detail: 'Queued',
+    );
+    transferLog.setExpanded(true);
+    notifyListeners();
+    _pumpDownloadQueue();
+  }
+
+  void _pumpDownloadQueue() {
+    while (_activeDownloads < maxParallelDownloads &&
+        _downloadQueue.isNotEmpty) {
+      final track = _downloadQueue.removeAt(0);
+      final id = track['id'] as String;
+      _queuedIds.remove(id);
+      _activeDownloads++;
+      // Fire-and-forget; the function reports progress through transferLog.
+      unawaited(_runQueuedDownload(track, id));
+    }
+  }
+
+  Future<void> _runQueuedDownload(
+    Map<String, dynamic> track,
+    String id,
+  ) async {
+    try {
+      await downloadYouTubeTrack(track);
+    } finally {
+      _activeDownloads--;
+      _pumpDownloadQueue();
+      notifyListeners();
+    }
+  }
   final YouTubePlaylistService ytPlaylistService = YouTubePlaylistService();
   late final PlaybackManager playbackManager;
   final Map<String, String> localFiles = {};
   final Map<String, String> artworkFiles = {};
+  final Map<String, String> midrollFiles = {};
   final Map<String, double> downloadProgress = {};
   final Set<String> downloadingIds = {};
+
+  /// Live log surfaced to the UI so users can see in-flight and finished
+  /// transfers. Initialized after construction so widgets can wire up.
+  final TransferLog transferLog = TransferLog();
 
   final Map<String, WebSocket> _sources = {};
   final Map<String, Future<void>> _receives = {};
@@ -1021,6 +1079,14 @@ class AppController extends ChangeNotifier {
     if (downloadingIds.contains(id)) return;
     downloadingIds.add(id);
     downloadProgress[id] = 0.0;
+    final title = (track['title'] as String?) ?? 'Untitled';
+    transferLog.begin(
+      id: id,
+      title: title,
+      kind: TransferKind.download,
+      detail: 'Connecting…',
+    );
+    transferLog.setExpanded(true);
     notifyListeners();
 
     try {
@@ -1034,9 +1100,16 @@ class AppController extends ChangeNotifier {
         outputFilePath: outMp3Path,
         onProgress: (progress) {
           downloadProgress[id] = progress;
+          transferLog.update(
+            id,
+            progress: progress,
+            detail: 'Downloading audio…',
+          );
           notifyListeners();
         },
       );
+
+      transferLog.update(id, detail: 'Saving tags…');
 
       if (file != null && await file.exists()) {
         localFiles[id] = file.path;
@@ -1044,6 +1117,7 @@ class AppController extends ChangeNotifier {
 
       final thumbUrl = track['thumbnail_url'] as String?;
       if (thumbUrl != null && thumbUrl.isNotEmpty) {
+        transferLog.update(id, detail: 'Saving artwork…');
         final artFile = await ytService.downloadThumbnail(
           thumbUrl,
           '${musicDir.path}/$id.jpg',
@@ -1053,10 +1127,25 @@ class AppController extends ChangeNotifier {
         }
       }
 
+      // Mid-roll screenshot at 0:10 — uses YouTube's storyboard tiles so
+      // saved tracks show a real "frame from the clip" instead of the
+      // generic cover.
+      transferLog.update(id, detail: 'Capturing 0:10 preview…');
+      final midroll = await ytService.downloadScreenshot(
+        videoId: videoId,
+        outputImagePath: '${musicDir.path}/$id-preview.jpg',
+        seconds: 10.0,
+      );
+      if (midroll != null && await midroll.exists()) {
+        midrollFiles[id] = midroll.path;
+      }
+
       await _saveFiles();
       transferStatus = 'MP3 скачан: ${track['title']}';
-    } catch (_) {
+      transferLog.finish(id, detail: 'Saved');
+    } catch (e) {
       transferStatus = 'Ошибка скачивания: ${track['title']}';
+      transferLog.fail(id, e.toString());
     } finally {
       downloadingIds.remove(id);
       downloadProgress.remove(id);

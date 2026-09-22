@@ -63,8 +63,12 @@ ThemeData buildMaboyTheme() {
 
   final base = ThemeData.dark(useMaterial3: true);
 
-  // Build Inter typography once and reuse it across the theme.
-  final interText = GoogleFonts.interTextTheme(base.textTheme).apply(
+  // Build Inter typography once and reuse it across the theme. When tests
+  // disable runtime fetching (kIsTest) we fall back to the platform default.
+  final baseText = _canFetchGoogleFonts
+      ? GoogleFonts.interTextTheme(base.textTheme)
+      : base.textTheme;
+  final interText = baseText.apply(
     bodyColor: MaboyColors.text,
     displayColor: MaboyColors.text,
   );
@@ -314,6 +318,45 @@ class _MaboyPatternPainter extends CustomPainter {
   bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
+/// True when we should try to fetch Google Fonts at runtime. Callers can
+/// flip `GoogleFonts.config.allowRuntimeFetching` off before constructing
+/// the theme to fall back to the platform default (used by tests).
+bool get _canFetchGoogleFonts {
+  try {
+    return GoogleFonts.config.allowRuntimeFetching;
+  } catch (_) {
+    return false;
+  }
+}
+
+TextStyle _interBase({
+  double? size,
+  FontWeight? weight,
+  Color? color,
+  double? letterSpacing,
+  double? height,
+  FontStyle? fontStyle,
+}) {
+  if (_canFetchGoogleFonts) {
+    return GoogleFonts.inter(
+      color: color,
+      fontSize: size,
+      fontWeight: weight,
+      letterSpacing: letterSpacing,
+      height: height,
+      fontStyle: fontStyle,
+    );
+  }
+  return TextStyle(
+    color: color,
+    fontSize: size,
+    fontWeight: weight,
+    letterSpacing: letterSpacing,
+    height: height,
+    fontStyle: fontStyle,
+  );
+}
+
 /// Brand wordmark. Lower-case, heavy weight, tight tracking — a neutral
 /// foundation that any theme color can sit on top of.
 class MaboyBrand extends StatelessWidget {
@@ -325,11 +368,11 @@ class MaboyBrand extends StatelessWidget {
   @override
   Widget build(BuildContext context) => Text(
         'maboy',
-        style: GoogleFonts.inter(
+        style: _interBase(
           color: color ?? MaboyColors.text,
-          fontSize: size,
+          size: size,
           height: 1,
-          fontWeight: FontWeight.w900,
+          weight: FontWeight.w900,
           letterSpacing: -1.4,
         ),
       );

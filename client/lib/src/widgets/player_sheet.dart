@@ -114,9 +114,11 @@ class MiniPlayer extends StatelessWidget {
       borderRadius: BorderRadius.circular(6),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
-        onTap: () => Navigator.push<void>(
-          context,
-          MaterialPageRoute(builder: (_) => PlayerPage(controller: controller)),
+        onTap: () => showModalBottomSheet<void>(
+          context: context,
+          isScrollControlled: true,
+          backgroundColor: MaboyColors.background,
+          builder: (_) => PlayerPage(controller: controller),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
