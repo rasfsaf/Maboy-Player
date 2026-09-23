@@ -5,6 +5,7 @@ import 'api.dart';
 import 'app_controller.dart';
 import 'design_system.dart';
 import 'pages/equalizer_page.dart';
+import 'pages/friends_page.dart';
 import 'pages/playlist_detail_page.dart';
 import 'pages/secondary_pages.dart';
 import 'widgets/marquee_text.dart';
@@ -416,7 +417,7 @@ class _HomePageState extends State<HomePage> {
                           children: [
                             Icon(Icons.snippet_folder_outlined),
                             SizedBox(width: 12),
-                            Text('Сканировать музыку устройства'),
+                            Text('Поиск музыки на телефоне'),
                           ],
                         ),
                       ),
@@ -510,20 +511,34 @@ class _HomePageState extends State<HomePage> {
                       duration: const Duration(milliseconds: 180),
                       curve: Curves.easeOut,
                       alignment: Alignment.topCenter,
-                      // Ключевой фикс: длинный transferStatus (название трека)
-                      // плавно раздвигает список вместо резкого скачка вниз.
                       child: c.transferStatus.isNotEmpty
                           ? Padding(
                               padding: const EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 4,
+                                horizontal: 16,
+                                vertical: 6,
                               ),
-                              child: Text(
-                                c.transferStatus,
-                                style: const TextStyle(
-                                  color: MaboyColors.textMuted,
-                                  fontSize: 13,
-                                ),
+                              child: Row(
+                                children: [
+                                  const SizedBox(
+                                    width: 12,
+                                    height: 12,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Expanded(
+                                    child: Text(
+                                      c.transferStatus,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: MaboyColors.textMuted,
+                                        fontSize: 13,
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             )
                           : const SizedBox.shrink(),
@@ -787,102 +802,8 @@ class _HomePageState extends State<HomePage> {
                                 },
                               ),
 
-                        // PAGE 2: QUEUE
-                        Column(
-                          children: [
-                            Row(
-                              mainAxisAlignment: MainAxisAlignment.end,
-                              children: [
-                                IconButton(
-                                  icon: const Icon(Icons.shuffle),
-                                  tooltip: 'Перемешать',
-                                  onPressed: c.queue.length > 1
-                                      ? c.shuffleQueue
-                                      : null,
-                                ),
-                                IconButton(
-                                  icon: const Icon(Icons.clear_all),
-                                  tooltip: 'Очистить очередь',
-                                  onPressed: c.queue.isNotEmpty
-                                      ? () => c.setQueue([])
-                                      : null,
-                                ),
-                              ],
-                            ),
-                            Expanded(
-                              child: c.queue.isEmpty
-                                  ? const Center(
-                                      child: Text(
-                                        'Очередь воспроизведения пуста',
-                                      ),
-                                    )
-                                  : ReorderableListView(
-                                      proxyDecorator:
-                                          maboyReorderProxyDecorator,
-                                      buildDefaultDragHandles: false,
-                                      onReorder: (from, to) {
-                                        if (to > from) to--;
-                                        final items =
-                                            List<Map<String, dynamic>>.from(
-                                              c.queue,
-                                            );
-                                        items.insert(to, items.removeAt(from));
-                                        c.setQueue(items);
-                                      },
-                                      children: c.queue.asMap().entries.map((
-                                        entry,
-                                      ) {
-                                        final index = entry.key;
-                                        final item = entry.value;
-                                        final track = c.tracks
-                                            .where(
-                                              (entry) =>
-                                                  entry['id'] ==
-                                                  item['track_id'],
-                                            )
-                                            .firstOrNull;
-                                        return ReorderableDelayedDragStartListener(
-                                          key: ValueKey(item['id']),
-                                          index: index,
-                                          child: ListTile(
-                                            contentPadding:
-                                                const EdgeInsets.symmetric(
-                                                  horizontal: 12,
-                                                ),
-                                            leading: TrackCover(
-                                              controller: c,
-                                              track: track ?? const {},
-                                              size: 44,
-                                              radius: 6,
-                                            ),
-                                            title: MarqueeText(
-                                              '${track?['title'] ?? 'Трек'}',
-                                            ),
-                                            subtitle: Text(
-                                              '${track?['artist'] ?? ''}',
-                                              maxLines: 1,
-                                              overflow: TextOverflow.ellipsis,
-                                              style: const TextStyle(
-                                                color: MaboyColors.textMuted,
-                                                fontSize: 12,
-                                              ),
-                                            ),
-                                            onTap: () => c.playQueueItem(item),
-                                            trailing: IconButton(
-                                              icon: const Icon(Icons.close),
-                                              onPressed: () => c.setQueue(
-                                                c.queue.where(
-                                                  (q) => q['id'] != item['id'],
-                                                ),
-                                              ),
-                                            ),
-                                          ),
-                                        );
-                                      }).toList(),
-                                    ),
-                            ),
-                          ],
-                        ),
+                        // PAGE 2: FRIENDS
+                        FriendsPage(controller: c),
                       ][page],
                     ),
                     // MiniPlayer тоже в AnimatedSize — чтобы список не прыгал
@@ -913,21 +834,27 @@ class _HomePageState extends State<HomePage> {
                   _clearSelection();
                   setState(() => page = value);
                 },
-                destinations: const [
-                  NavigationDestination(
+                destinations: [
+                  const NavigationDestination(
                     icon: Icon(Icons.library_music_outlined),
                     selectedIcon: Icon(Icons.library_music),
                     label: 'Библиотека',
                   ),
-                  NavigationDestination(
+                  const NavigationDestination(
                     icon: Icon(Icons.album_outlined),
                     selectedIcon: Icon(Icons.album),
                     label: 'Плейлисты',
                   ),
                   NavigationDestination(
-                    icon: Icon(Icons.queue_music_outlined),
-                    selectedIcon: Icon(Icons.queue_music),
-                    label: 'Очередь',
+                    icon: Badge(
+                      isLabelVisible: c.hasPendingFriendNotifications,
+                      child: const Icon(Icons.people_outline),
+                    ),
+                    selectedIcon: Badge(
+                      isLabelVisible: c.hasPendingFriendNotifications,
+                      child: const Icon(Icons.people),
+                    ),
+                    label: 'Друзья',
                   ),
                 ],
               ),
@@ -985,9 +912,10 @@ class _DesktopSideNav extends StatelessWidget {
             onTap: () => onSelect(1),
           ),
           _SideNavButton(
-            icon: Icons.queue_music_outlined,
-            label: 'Очередь',
+            icon: Icons.people_outline,
+            label: 'Друзья',
             selected: selectedPage == 2,
+            hasBadge: controller.hasPendingFriendNotifications,
             onTap: () => onSelect(2),
           ),
           const Divider(height: 24),
@@ -1075,12 +1003,14 @@ class _SideNavButton extends StatelessWidget {
     required this.label,
     required this.onTap,
     this.selected = false,
+    this.hasBadge = false,
   });
 
   final IconData icon;
   final String label;
   final VoidCallback onTap;
   final bool selected;
+  final bool hasBadge;
 
   @override
   Widget build(BuildContext context) => Material(
@@ -1095,10 +1025,35 @@ class _SideNavButton extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
         child: Row(
           children: [
-            Icon(
-              icon,
-              size: 20,
-              color: selected ? MaboyColors.primary : MaboyColors.textMuted,
+            Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Icon(
+                  icon,
+                  size: 20,
+                  color: selected ? MaboyColors.primary : MaboyColors.textMuted,
+                ),
+                if (hasBadge)
+                  Positioned(
+                    top: -2,
+                    right: -2,
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                        color: Colors.redAccent,
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.redAccent,
+                            blurRadius: 4,
+                            spreadRadius: 1,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
             ),
             const SizedBox(width: 11),
             Expanded(

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:mpv_audio_kit/mpv_audio_kit.dart' as mpv;
@@ -43,6 +44,7 @@ class MaboyAudioSource {
 /// keeps controller and widget tests deterministic while still using the exact
 /// production engine for Windows and Android playback.
 class MaboyAudioPlayer {
+  bool get _isTestEnv => Platform.environment.containsKey('FLUTTER_TEST');
   mpv.Player? _native;
   MaboyAudioSource? _audioSource;
   final List<StreamSubscription<dynamic>> _nativeSubscriptions = [];
@@ -170,6 +172,11 @@ class MaboyAudioPlayer {
     _durationController.add(_duration);
     _emitState();
 
+    if (_isTestEnv) {
+      _processingState = ProcessingState.ready;
+      _emitState();
+      return;
+    }
     final player = await _ensureNative();
     final artwork = source.artworkUri == null
         ? mpv.MediaSessionArtwork.embedded
@@ -209,6 +216,12 @@ class MaboyAudioPlayer {
   Future<void> play() async {
     _unsolicitedPlayBlocked = false;
     if (_audioSource == null) return;
+    if (_isTestEnv) {
+      _playing = true;
+      _playingController.add(true);
+      _emitState();
+      return;
+    }
     final player = await _ensureNative();
     await player.play();
   }
@@ -229,14 +242,22 @@ class MaboyAudioPlayer {
   }
 
   Future<void> pause() async {
+    if (_isTestEnv) {
+      _playing = false;
+      _playingController.add(false);
+      _emitState();
+      return;
+    }
     final player = _native;
     if (player == null) return;
     await player.pause();
   }
 
   Future<void> stop() async {
-    final player = _native;
-    if (player != null) await player.stop();
+    if (!_isTestEnv) {
+      final player = _native;
+      if (player != null) await player.stop();
+    }
     _playing = false;
     _position = Duration.zero;
     _processingState = ProcessingState.idle;
@@ -246,6 +267,9 @@ class MaboyAudioPlayer {
   }
 
   Future<void> seek(Duration target) async {
+    _position = target;
+    _positionController.add(target);
+    if (_isTestEnv) return;
     final player = _native;
     if (player == null) return;
     await player.seek(target, exact: true);

@@ -25,7 +25,9 @@ senders: dict[tuple[str, str], WebSocket] = {}
 sender_available: dict[tuple[str, str], asyncio.Event] = {}
 sender_locks: dict[tuple[str, str], asyncio.Lock] = {}
 source_finished: dict[tuple[str, str], asyncio.Event] = {}
-sync_clients: dict[str, set[WebSocket]] = {}
+sync_clients: dict[str, dict[WebSocket, str]] = {}
+device_disconnect_tasks: dict[tuple[str, str], asyncio.Task] = {}
+DISCONNECT_GRACE_PERIOD: float = 10.0
 
 
 async def prefetch_youtube_audio(source_id: str):
@@ -142,8 +144,37 @@ def db_session() -> Generator[Session, None, None]:
             yield db
 
 
+def count_peer_devices(user_id: str, current_device_id: str = "", current_ws: WebSocket | None = None) -> int:
+    other_devices = set()
+    user_clients = sync_clients.get(user_id, {})
+    for ws, dev_id in user_clients.items():
+        if ws is current_ws:
+            continue
+        if dev_id:
+            if not current_device_id or dev_id != current_device_id:
+                other_devices.add(dev_id)
+        else:
+            other_devices.add(f"socket_{id(ws)}")
+    for (uid, dev_id) in device_disconnect_tasks:
+        if uid == user_id and dev_id and (not current_device_id or dev_id != current_device_id):
+            other_devices.add(dev_id)
+    return len(other_devices)
+
+
+async def broadcast_presence(user_id: str):
+    user_clients = sync_clients.get(user_id, {})
+    for ws, dev_id in tuple(user_clients.items()):
+        if not dev_id:
+            continue
+        peer_count = count_peer_devices(user_id, current_device_id=dev_id, current_ws=ws)
+        try:
+            await ws.send_json({"type": "presence", "peer_count": peer_count})
+        except (WebSocketDisconnect, RuntimeError, OSError):
+            user_clients.pop(ws, None)
+
+
 @app.websocket("/sync/events")
-async def sync_events(ws: WebSocket, token: str):
+async def sync_events(ws: WebSocket, token: str, device_id: str = "", device_name: str = ""):
     with db_session() as db:
         user = websocket_user(db, token)
         user_id = user.id if user else None
@@ -151,8 +182,15 @@ async def sync_events(ws: WebSocket, token: str):
         await ws.close(code=1008)
         return
     await ws.accept()
-    clients = sync_clients.setdefault(user_id, set())
-    clients.add(ws)
+
+    if device_id:
+        grace_task = device_disconnect_tasks.pop((user_id, device_id), None)
+        if grace_task is not None and not grace_task.done():
+            grace_task.cancel()
+
+    clients = sync_clients.setdefault(user_id, {})
+    clients[ws] = device_id
+    await broadcast_presence(user_id)
     try:
         while True:
             # Client heartbeats also let the server notice a disconnected peer.
@@ -160,17 +198,34 @@ async def sync_events(ws: WebSocket, token: str):
     except (WebSocketDisconnect, RuntimeError, OSError):
         pass
     finally:
-        clients.discard(ws)
-        if not clients:
-            sync_clients.pop(user_id, None)
+        clients.pop(ws, None)
+        has_remaining = any(did == device_id for did in clients.values()) if device_id else False
+        if device_id and not has_remaining:
+            async def _grace_disconnect(uid: str, did: str):
+                try:
+                    await asyncio.sleep(DISCONNECT_GRACE_PERIOD)
+                except asyncio.CancelledError:
+                    return
+                finally:
+                    device_disconnect_tasks.pop((uid, did), None)
+                await broadcast_presence(uid)
+
+            device_disconnect_tasks[(user_id, device_id)] = asyncio.create_task(
+                _grace_disconnect(user_id, device_id)
+            )
+        else:
+            if not clients and not any(uid == user_id for uid, _ in device_disconnect_tasks):
+                sync_clients.pop(user_id, None)
+            await broadcast_presence(user_id)
 
 
 async def announce_sync(user_id: str, version: int):
-    for socket in tuple(sync_clients.get(user_id, ())):
+    clients_dict = sync_clients.get(user_id, {})
+    for socket in tuple(clients_dict.keys()):
         try:
             await socket.send_json({"type": "changed", "version": version})
         except (WebSocketDisconnect, RuntimeError, OSError):
-            sync_clients.get(user_id, set()).discard(socket)
+            clients_dict.pop(socket, None)
 
 
 @app.websocket("/relay/{track_id}/source")
@@ -210,7 +265,7 @@ async def relay_source(ws: WebSocket, track_id: str, token: str, device: str):
 
 
 @app.websocket("/relay/{track_id}/receive")
-async def relay_receive(ws: WebSocket, track_id: str, token: str):
+async def relay_receive(ws: WebSocket, track_id: str, token: str, device: str = ""):
     with db_session() as db:
         key = relay_identity(db, token, track_id)
     if key is None:
@@ -219,11 +274,21 @@ async def relay_receive(ws: WebSocket, track_id: str, token: str):
     await ws.accept()
     user_id = key[0]
     if key not in senders:
-        for client in tuple(sync_clients.get(user_id, ())):
+        peers_available = count_peer_devices(user_id, current_device_id=device, current_ws=ws)
+        if peers_available == 0:
             try:
-                await client.send_json({"type": "relay_request", "track_id": track_id})
+                await ws.send_text("peer_offline")
             except (WebSocketDisconnect, RuntimeError, OSError):
-                sync_clients.get(user_id, set()).discard(client)
+                pass
+            await ws.close()
+            return
+
+        for client, dev_id in tuple(sync_clients.get(user_id, {}).items()):
+            if client != ws and (not device or dev_id != device):
+                try:
+                    await client.send_json({"type": "relay_request", "track_id": track_id})
+                except (WebSocketDisconnect, RuntimeError, OSError):
+                    sync_clients.get(user_id, {}).pop(client, None)
     try:
         while True:
             try:

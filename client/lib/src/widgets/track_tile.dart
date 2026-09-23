@@ -313,15 +313,20 @@ class TrackTile extends StatelessWidget {
           title: Row(
             children: [
               Expanded(
-                child: MarqueeText(
-                  '${track['title']}',
-                  style: TextStyle(
-                    color: isPlaying
-                        ? Theme.of(context).colorScheme.primary
-                        : null,
-                    fontWeight: isPlaying ? FontWeight.w800 : FontWeight.w600,
-                  ),
-                ),
+                child: isPlaying
+                    ? MarqueeText(
+                        '${track['title']}',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.primary,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      )
+                    : Text(
+                        '${track['title']}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
               ),
               if (isDownloading)
                 Padding(
@@ -346,7 +351,7 @@ class TrackTile extends StatelessWidget {
                 const SizedBox(width: 4),
               ],
               Expanded(
-                child: MarqueeText(
+                child: Text(
                   [
                     track['artist'],
                     if (track['album'] != null &&
@@ -354,6 +359,8 @@ class TrackTile extends StatelessWidget {
                       track['album'],
                     locationStatus,
                   ].where((v) => v != null && '$v'.isNotEmpty).join(' • '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                   style: TextStyle(color: statusColor),
                 ),
               ),

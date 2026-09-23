@@ -54,6 +54,37 @@ void EnableFullDpiSupportIfAvailable(HWND hwnd) {
   FreeLibrary(user32_module);
 }
 
+static WNDPROC g_original_child_proc = nullptr;
+
+static LRESULT CALLBACK ChildContentWndProc(HWND hwnd, UINT msg, WPARAM wparam, LPARAM lparam) {
+  if (msg == WM_NCHITTEST) {
+    HWND parent = GetParent(hwnd);
+    if (parent && !IsZoomed(parent)) {
+      RECT bounds;
+      if (GetWindowRect(parent, &bounds)) {
+        const int edge = MulDiv(8, GetDpiForWindow(parent), 96);
+        const int x = GET_X_LPARAM(lparam);
+        const int y = GET_Y_LPARAM(lparam);
+
+        const int buttons_width = MulDiv(138, GetDpiForWindow(parent), 96);
+        const int titlebar_height = MulDiv(36, GetDpiForWindow(parent), 96);
+        const bool in_buttons = (x >= bounds.right - buttons_width && y <= bounds.top + titlebar_height);
+
+        if (!in_buttons) {
+          const bool left = x < bounds.left + edge;
+          const bool right = x >= bounds.right - edge;
+          const bool top = y < bounds.top + edge;
+          const bool bottom = y >= bounds.bottom - edge;
+          if (left || right || top || bottom) {
+            return HTTRANSPARENT;
+          }
+        }
+      }
+    }
+  }
+  return CallWindowProc(g_original_child_proc, hwnd, msg, wparam, lparam);
+}
+
 }  // namespace
 
 // Manages the Win32Window's window class registration.
@@ -309,6 +340,12 @@ Win32Window::MessageHandler(HWND hwnd,
 void Win32Window::Destroy() {
   OnDestroy();
 
+  if (child_content_ && g_original_child_proc) {
+    SetWindowLongPtr(child_content_, GWLP_WNDPROC,
+                     reinterpret_cast<LONG_PTR>(g_original_child_proc));
+    g_original_child_proc = nullptr;
+  }
+
   if (window_handle_) {
     DestroyWindow(window_handle_);
     window_handle_ = nullptr;
@@ -330,6 +367,12 @@ void Win32Window::SetChildContent(HWND content) {
 
   MoveWindow(content, frame.left, frame.top, frame.right - frame.left,
              frame.bottom - frame.top, true);
+
+  if (content && !g_original_child_proc) {
+    g_original_child_proc = reinterpret_cast<WNDPROC>(
+        SetWindowLongPtr(content, GWLP_WNDPROC,
+                         reinterpret_cast<LONG_PTR>(ChildContentWndProc)));
+  }
 
   SetFocus(child_content_);
 }

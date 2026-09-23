@@ -174,11 +174,8 @@ class MiniPlayer extends StatelessWidget {
                         onChanged: controller.setVolume,
                       ),
                     ),
-                    IconButton(
-                      tooltip: 'Открыть плеер и очередь',
-                      onPressed: openPlayer,
-                      icon: const Icon(Icons.queue_music),
-                    ),
+                    const SizedBox(width: 8),
+                    _GlowingQueueButton(onPressed: openPlayer),
                   ],
                 ),
               )
@@ -217,12 +214,138 @@ class MiniPlayer extends StatelessWidget {
                               : null,
                           icon: const Icon(Icons.skip_next),
                         ),
+                        const SizedBox(width: 4),
+                        _GlowingQueueButton(
+                          onPressed: openPlayer,
+                          compact: true,
+                        ),
                       ],
                     ),
                   ),
                 ],
               ),
       ),
+    );
+  }
+}
+
+class _GlowingQueueButton extends StatefulWidget {
+  const _GlowingQueueButton({
+    required this.onPressed,
+    this.compact = false,
+  });
+
+  final VoidCallback onPressed;
+  final bool compact;
+
+  @override
+  State<_GlowingQueueButton> createState() => _GlowingQueueButtonState();
+}
+
+class _GlowingQueueButtonState extends State<_GlowingQueueButton>
+    with SingleTickerProviderStateMixin {
+  bool _isHovered = false;
+  late AnimationController _animController;
+  late Animation<double> _glowAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _animController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat(reverse: true);
+    _glowAnimation = Tween<double>(begin: 0.45, end: 0.90).animate(
+      CurvedAnimation(parent: _animController, curve: Curves.easeInOut),
+    );
+  }
+
+  @override
+  void dispose() {
+    _animController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _glowAnimation,
+      builder: (context, _) {
+        final glowFactor = _isHovered ? 1.0 : _glowAnimation.value;
+        final blur = _isHovered ? 20.0 : 13.0;
+        final spread = _isHovered ? 2.5 : 1.2;
+
+        return Tooltip(
+          message: 'Открыть плеер и очередь',
+          child: MouseRegion(
+            onEnter: (_) => setState(() => _isHovered = true),
+            onExit: (_) => setState(() => _isHovered = false),
+            cursor: SystemMouseCursors.click,
+            child: GestureDetector(
+              onTap: widget.onPressed,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 180),
+                padding: widget.compact
+                    ? const EdgeInsets.all(7)
+                    : const EdgeInsets.symmetric(horizontal: 13, vertical: 7),
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    colors: [
+                      MaboyColors.primary.withValues(
+                        alpha: _isHovered ? 0.38 : 0.22,
+                      ),
+                      const Color(0xfff36d79).withValues(
+                        alpha: _isHovered ? 0.26 : 0.12,
+                      ),
+                    ],
+                  ),
+                  borderRadius: BorderRadius.circular(widget.compact ? 12 : 20),
+                  border: Border.all(
+                    color: MaboyColors.primary.withValues(
+                      alpha: _isHovered ? 1.0 : 0.8,
+                    ),
+                    width: _isHovered ? 1.6 : 1.2,
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: MaboyColors.primary.withValues(alpha: glowFactor * 0.65),
+                      blurRadius: blur,
+                      spreadRadius: spread,
+                    ),
+                    BoxShadow(
+                      color: const Color(0xfff36d79).withValues(alpha: glowFactor * 0.35),
+                      blurRadius: blur * 1.5,
+                      spreadRadius: spread * 1.1,
+                    ),
+                  ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.queue_music,
+                      size: widget.compact ? 19 : 20,
+                      color: Colors.white,
+                    ),
+                    if (!widget.compact) ...[
+                      const SizedBox(width: 7),
+                      const Text(
+                        'Очередь',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          letterSpacing: 0.3,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -312,129 +435,219 @@ class PlayerSheet extends StatelessWidget {
 
   final AppController controller;
 
+  Widget _buildPlayerControls(
+    BuildContext context,
+    Map<String, dynamic> track,
+    double artSize,
+  ) {
+    final id = track['id'] as String;
+    final isFav = controller.isFavorite(id);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _DecorativeProgressCover(
+          controller: controller,
+          track: track,
+          size: artSize,
+        ),
+        const SizedBox(height: 18),
+        Text(
+          '${track['title']}',
+          textAlign: TextAlign.center,
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+            fontWeight: FontWeight.w800,
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          '${track['artist'] ?? 'Неизвестный исполнитель'}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(color: MaboyColors.textMuted),
+        ),
+        const SizedBox(height: 18),
+        ProgressBar(controller: controller),
+        const SizedBox(height: 12),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            IconButton(
+              tooltip: controller.isShuffle
+                  ? 'Микс включен'
+                  : 'Микс (без повторений)',
+              onPressed: controller.toggleShuffle,
+              icon: Icon(
+                Icons.shuffle,
+                color: controller.isShuffle
+                    ? MaboyColors.primary
+                    : MaboyColors.textMuted,
+              ),
+            ),
+            IconButton(
+              tooltip: 'Предыдущий трек',
+              iconSize: 32,
+              onPressed: controller.hasPrevious
+                  ? controller.playPrevious
+                  : null,
+              icon: const Icon(Icons.skip_previous),
+            ),
+            PlayPauseButton(controller: controller, large: true),
+            IconButton(
+              tooltip: 'Следующий трек',
+              iconSize: 32,
+              onPressed: controller.hasNext
+                  ? controller.playNext
+                  : null,
+              icon: const Icon(Icons.skip_next),
+            ),
+            IconButton(
+              tooltip: isFav ? 'Убрать из избранного' : 'В избранное',
+              onPressed: () => controller.toggleFavorite(id),
+              icon: Icon(
+                isFav ? Icons.favorite : Icons.favorite_border,
+                color: isFav
+                    ? MaboyColors.primary
+                    : MaboyColors.textMuted,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Row(
+          children: [
+            IconButton(
+              tooltip: controller.volume == 0
+                  ? 'Включить звук'
+                  : 'Выключить звук',
+              onPressed: () => controller.setVolume(
+                controller.volume == 0 ? 1.0 : 0.0,
+              ),
+              icon: Icon(
+                controller.volume == 0
+                    ? Icons.volume_off
+                    : Icons.volume_down,
+              ),
+            ),
+            Expanded(
+              child: Slider(
+                value: controller.volume,
+                onChanged: controller.setVolume,
+              ),
+            ),
+            IconButton(
+              tooltip: 'Максимальная громкость',
+              onPressed: () => controller.setVolume(1.0),
+              icon: const Icon(Icons.volume_up),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildTopBar(BuildContext context) => Row(
+    children: [
+      IconButton(
+        tooltip: 'Назад',
+        onPressed: () => Navigator.maybePop(context),
+        icon: const Icon(Icons.keyboard_arrow_down),
+      ),
+      const SizedBox(width: 8),
+      const Expanded(child: MaboyBrand(size: 27)),
+      TextButton.icon(
+        onPressed: () => Navigator.push<void>(
+          context,
+          MaterialPageRoute(
+            builder: (_) => EqualizerPage(controller: controller),
+          ),
+        ),
+        icon: const Icon(Icons.tune, size: 19),
+        label: const Text('EQ'),
+      ),
+    ],
+  );
+
   @override
   Widget build(BuildContext context) => ListenableBuilder(
     listenable: controller,
     builder: (context, _) {
       final track = controller.playingTrack;
       if (track == null) return const SizedBox.shrink();
-      final id = track['id'] as String;
-      final isFav = controller.isFavorite(id);
 
       return SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
             final desktop = constraints.maxWidth >= 820;
-            final artSize = desktop
-                ? 276.0
-                : (constraints.maxWidth - 100).clamp(190.0, 280.0);
 
-            final playerContent = Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                _DecorativeProgressCover(
-                  controller: controller,
-                  track: track,
-                  size: artSize,
-                ),
-                const SizedBox(height: 26),
-                Text(
-                  '${track['title']}',
-                  textAlign: TextAlign.center,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w800,
+            if (desktop) {
+              final availableHeight = constraints.maxHeight;
+              final desktopArtSize = (availableHeight * 0.33).clamp(160.0, 260.0);
+
+              return Padding(
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 1200),
+                    child: Column(
+                      children: [
+                        _buildTopBar(context),
+                        const SizedBox(height: 12),
+                        Expanded(
+                          child: Row(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              // Fixed Player Column
+                              Expanded(
+                                flex: 5,
+                                child: MaboyGlassPanel(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 22,
+                                    vertical: 16,
+                                  ),
+                                  child: LayoutBuilder(
+                                    builder: (context, panelConstraints) => Center(
+                                      child: FittedBox(
+                                        fit: BoxFit.scaleDown,
+                                        alignment: Alignment.center,
+                                        child: SizedBox(
+                                          width: panelConstraints.maxWidth.clamp(300.0, 480.0),
+                                          child: _buildPlayerControls(
+                                            context,
+                                            track,
+                                            desktopArtSize,
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 18),
+                              // Independent Scrollable Queue Column
+                              Expanded(
+                                flex: 6,
+                                child: MaboyGlassPanel(
+                                  padding: const EdgeInsets.fromLTRB(20, 18, 12, 14),
+                                  child: _PlaybackQueue(
+                                    controller: controller,
+                                    isDesktop: true,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-                const SizedBox(height: 5),
-                Text(
-                  '${track['artist'] ?? 'Неизвестный исполнитель'}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: MaboyColors.textMuted),
-                ),
-                const SizedBox(height: 24),
-                // This bottom slider is the only seek control. The ring above
-                // displays the same stream and intentionally ignores gestures.
-                ProgressBar(controller: controller),
-                const SizedBox(height: 15),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: [
-                    IconButton(
-                      tooltip: controller.isShuffle
-                          ? 'Микс включен'
-                          : 'Микс (без повторений)',
-                      onPressed: controller.toggleShuffle,
-                      icon: Icon(
-                        Icons.shuffle,
-                        color: controller.isShuffle
-                            ? MaboyColors.primary
-                            : MaboyColors.textMuted,
-                      ),
-                    ),
-                    IconButton(
-                      tooltip: 'Предыдущий трек',
-                      iconSize: 32,
-                      onPressed: controller.hasPrevious
-                          ? controller.playPrevious
-                          : null,
-                      icon: const Icon(Icons.skip_previous),
-                    ),
-                    PlayPauseButton(controller: controller, large: true),
-                    IconButton(
-                      tooltip: 'Следующий трек',
-                      iconSize: 32,
-                      onPressed: controller.hasNext
-                          ? controller.playNext
-                          : null,
-                      icon: const Icon(Icons.skip_next),
-                    ),
-                    IconButton(
-                      tooltip: isFav ? 'Убрать из избранного' : 'В избранное',
-                      onPressed: () => controller.toggleFavorite(id),
-                      icon: Icon(
-                        isFav ? Icons.favorite : Icons.favorite_border,
-                        color: isFav
-                            ? MaboyColors.primary
-                            : MaboyColors.textMuted,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Row(
-                  children: [
-                    IconButton(
-                      tooltip: controller.volume == 0
-                          ? 'Включить звук'
-                          : 'Выключить звук',
-                      onPressed: () => controller.setVolume(
-                        controller.volume == 0 ? 1.0 : 0.0,
-                      ),
-                      icon: Icon(
-                        controller.volume == 0
-                            ? Icons.volume_off
-                            : Icons.volume_down,
-                      ),
-                    ),
-                    Expanded(
-                      child: Slider(
-                        value: controller.volume,
-                        onChanged: controller.setVolume,
-                      ),
-                    ),
-                    IconButton(
-                      tooltip: 'Максимальная громкость',
-                      onPressed: () => controller.setVolume(1.0),
-                      icon: const Icon(Icons.volume_up),
-                    ),
-                  ],
-                ),
-              ],
-            );
+              );
+            }
 
+            final artSize = (constraints.maxWidth - 100).clamp(190.0, 280.0);
             return SingleChildScrollView(
               padding: const EdgeInsets.fromLTRB(20, 14, 20, 30),
               child: Center(
@@ -442,56 +655,17 @@ class PlayerSheet extends StatelessWidget {
                   constraints: const BoxConstraints(maxWidth: 1180),
                   child: Column(
                     children: [
-                      Row(
-                        children: [
-                          IconButton(
-                            tooltip: 'Назад',
-                            onPressed: () => Navigator.maybePop(context),
-                            icon: const Icon(Icons.keyboard_arrow_down),
-                          ),
-                          const SizedBox(width: 8),
-                          const Expanded(child: MaboyBrand(size: 27)),
-                          TextButton.icon(
-                            onPressed: () => Navigator.push<void>(
-                              context,
-                              MaterialPageRoute(
-                                builder: (_) =>
-                                    EqualizerPage(controller: controller),
-                              ),
-                            ),
-                            icon: const Icon(Icons.tune, size: 19),
-                            label: const Text('EQ'),
-                          ),
-                        ],
-                      ),
+                      _buildTopBar(context),
                       const SizedBox(height: 12),
-                      if (desktop)
-                        Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Expanded(
-                              child: MaboyGlassPanel(
-                                padding: const EdgeInsets.all(24),
-                                child: playerContent,
-                              ),
-                            ),
-                            const SizedBox(width: 18),
-                            Expanded(
-                              child: MaboyGlassPanel(
-                                padding: const EdgeInsets.all(22),
-                                child: _PlaybackQueue(controller: controller),
-                              ),
-                            ),
-                          ],
-                        )
-                      else ...[
-                        playerContent,
-                        const SizedBox(height: 22),
-                        MaboyGlassPanel(
-                          padding: const EdgeInsets.all(14),
-                          child: _PlaybackQueue(controller: controller),
+                      _buildPlayerControls(context, track, artSize),
+                      const SizedBox(height: 22),
+                      MaboyGlassPanel(
+                        padding: const EdgeInsets.all(14),
+                        child: _PlaybackQueue(
+                          controller: controller,
+                          isDesktop: false,
                         ),
-                      ],
+                      ),
                     ],
                   ),
                 ),
@@ -580,67 +754,274 @@ class _DecorativeProgressCover extends StatelessWidget {
 }
 
 class _PlaybackQueue extends StatelessWidget {
-  const _PlaybackQueue({required this.controller});
+  const _PlaybackQueue({
+    required this.controller,
+    this.isDesktop = false,
+  });
 
   final AppController controller;
+  final bool isDesktop;
 
   @override
   Widget build(BuildContext context) {
+    final deviceQueue = controller.deviceQueue;
     final entries = controller.activePlaybackQueue;
-    if (entries.isEmpty) return const SizedBox.shrink();
+    if (entries.isEmpty && deviceQueue.isEmpty) return const SizedBox.shrink();
 
-    final current = entries.first;
-    final upcoming = entries.skip(1).toList();
-
-    final visible = upcoming.length > 80
+    final current = entries.firstOrNull;
+    final queuedTrackIds = deviceQueue.map((q) => q['track_id']).toSet();
+    final upcoming = entries.length > 1
+        ? entries
+            .skip(1)
+            .where((e) => !queuedTrackIds.contains(e.track['id']))
+            .toList()
+        : <PlaybackQueueEntry>[];
+    final visibleUpcoming = upcoming.length > 80
         ? upcoming.take(80).toList()
         : upcoming;
+
+    final headerRow = Row(
+      children: [
+        Expanded(
+          child: Text(
+            deviceQueue.isNotEmpty
+                ? 'Очередь воспроизведения'
+                : 'Далее в очереди',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+        if (deviceQueue.isNotEmpty) ...[
+          IconButton(
+            icon: const Icon(Icons.shuffle, size: 20),
+            tooltip: 'Перемешать',
+            onPressed: deviceQueue.length > 1 ? controller.shuffleQueue : null,
+          ),
+          IconButton(
+            icon: const Icon(Icons.clear_all, size: 20),
+            tooltip: 'Очистить очередь',
+            onPressed: () => controller.setDeviceQueue([]),
+          ),
+        ],
+      ],
+    );
+
+    Widget buildDeviceQueue() {
+      return ReorderableListView.builder(
+        proxyDecorator: maboyReorderProxyDecorator,
+        shrinkWrap: !isDesktop || upcoming.isNotEmpty,
+        physics: (isDesktop && upcoming.isEmpty)
+            ? const ClampingScrollPhysics()
+            : const NeverScrollableScrollPhysics(),
+        buildDefaultDragHandles: false,
+        itemCount: deviceQueue.length,
+        onReorderStart: (_) => controller.beginReorder(),
+        onReorderEnd: (_) => controller.endReorder(),
+        onReorder: (from, to) {
+          if (to > from) to--;
+          final items = List<Map<String, dynamic>>.from(deviceQueue);
+          items.insert(to, items.removeAt(from));
+          controller.setDeviceQueue(items);
+        },
+        itemBuilder: (context, index) {
+          final item = deviceQueue[index];
+          final track = controller.tracks
+              .where((t) => t['id'] == item['track_id'])
+              .firstOrNull;
+          final isCurrent =
+              current != null && current.track['id'] == item['track_id'];
+
+          return ReorderableDelayedDragStartListener(
+            key: ValueKey(item['id']),
+            index: index,
+            child: ListTile(
+              contentPadding: const EdgeInsets.symmetric(
+                horizontal: 4,
+                vertical: 2,
+              ),
+              leading: TrackCover(
+                controller: controller,
+                track: track ?? const {},
+                size: 46,
+                radius: 5,
+              ),
+              title: MarqueeText(
+                '${track?['title'] ?? 'Трек'}',
+                style: TextStyle(
+                  color: isCurrent ? MaboyColors.primary : null,
+                  fontWeight: isCurrent ? FontWeight.bold : FontWeight.w600,
+                ),
+              ),
+              subtitle: Text(
+                isCurrent
+                    ? 'Сейчас играет'
+                    : '${track?['artist'] ?? 'Неизвестный исполнитель'}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: MaboyColors.textMuted),
+              ),
+              onTap: () => controller.playQueueItem(item),
+              trailing: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    tooltip: 'Убрать из очереди',
+                    icon: const Icon(Icons.close, size: 20),
+                    onPressed: () => controller.setDeviceQueue(
+                      deviceQueue.where((q) => q['id'] != item['id']),
+                    ),
+                  ),
+                  ReorderableDragStartListener(
+                    index: index,
+                    child: const MouseRegion(
+                      cursor: SystemMouseCursors.grab,
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 8,
+                        ),
+                        child: Icon(
+                          Icons.drag_indicator,
+                          size: 20,
+                          color: MaboyColors.textMuted,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        },
+      );
+    }
+
+    Widget buildUpcoming() {
+      return ReorderableListView.builder(
+        proxyDecorator: maboyReorderProxyDecorator,
+        shrinkWrap: !isDesktop || deviceQueue.isNotEmpty,
+        physics: (isDesktop && deviceQueue.isEmpty)
+            ? const ClampingScrollPhysics()
+            : const NeverScrollableScrollPhysics(),
+        buildDefaultDragHandles: false,
+        itemCount: visibleUpcoming.length,
+        onReorderStart: (_) => controller.beginReorder(),
+        onReorderEnd: (_) => controller.endReorder(),
+        onReorder: controller.reorderUpcomingPlayback,
+        itemBuilder: (context, index) {
+          final entry = visibleUpcoming[index];
+          return _PlaybackQueueTile(
+            key: ValueKey(entry.queueKey),
+            entry: entry,
+            controller: controller,
+            reorderIndex: index,
+          );
+        },
+      );
+    }
+
+    Widget buildQueueList() {
+      if (deviceQueue.isEmpty && upcoming.isEmpty) {
+        return const Padding(
+          padding: EdgeInsets.symmetric(vertical: 18),
+          child: Text(
+            'Это последний трек',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: MaboyColors.textMuted),
+          ),
+        );
+      }
+
+      if (deviceQueue.isEmpty) {
+        return buildUpcoming();
+      }
+
+      if (upcoming.isEmpty) {
+        return buildDeviceQueue();
+      }
+
+      return ListView(
+        shrinkWrap: !isDesktop,
+        physics: isDesktop
+            ? const ClampingScrollPhysics()
+            : const NeverScrollableScrollPhysics(),
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 4),
+            child: Text(
+              'Закреплено в очереди (${deviceQueue.length})',
+              style: const TextStyle(
+                color: MaboyColors.primary,
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+              ),
+            ),
+          ),
+          buildDeviceQueue(),
+          const Divider(height: 16),
+          Padding(
+            padding: const EdgeInsets.only(top: 4, bottom: 4),
+            child: Text(
+              'Далее (${visibleUpcoming.length})',
+              style: const TextStyle(
+                color: MaboyColors.textMuted,
+                fontWeight: FontWeight.bold,
+                fontSize: 13,
+              ),
+            ),
+          ),
+          buildUpcoming(),
+        ],
+      );
+    }
+
+    if (isDesktop) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          headerRow,
+          const SizedBox(height: 8),
+          if (current != null && deviceQueue.isEmpty) ...[
+            _PlaybackQueueTile(
+              entry: current,
+              controller: controller,
+              current: true,
+            ),
+            const Divider(height: 16),
+          ],
+          Expanded(
+            child: Scrollbar(
+              thumbVisibility: true,
+              child: buildQueueList(),
+            ),
+          ),
+          if (upcoming.length > visibleUpcoming.length)
+            const Padding(
+              padding: EdgeInsets.only(top: 6),
+              child: Text(
+                'Показаны ближайшие 80 треков',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: MaboyColors.textMuted, fontSize: 12),
+              ),
+            ),
+        ],
+      );
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Text(
-          'Далее в очереди',
-          style: Theme.of(
-            context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-        ),
-        const SizedBox(height: 10),
-        _PlaybackQueueTile(
-          entry: current,
-          controller: controller,
-          current: true,
-        ),
-        if (upcoming.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(vertical: 18),
-            child: Text(
-              'Это последний трек',
-              textAlign: TextAlign.center,
-              style: TextStyle(color: MaboyColors.textMuted),
-            ),
-          )
-        else
-          ReorderableListView.builder(
-            proxyDecorator: maboyReorderProxyDecorator,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            buildDefaultDragHandles: false,
-            itemCount: visible.length,
-            onReorderStart: (_) => controller.beginReorder(),
-            onReorderEnd: (_) => controller.endReorder(),
-            onReorder: controller.reorderUpcomingPlayback,
-            itemBuilder: (context, index) {
-              final entry = visible[index];
-              return _PlaybackQueueTile(
-                key: ValueKey(entry.queueKey),
-                entry: entry,
-                controller: controller,
-                reorderIndex: index,
-              );
-            },
+        headerRow,
+        const SizedBox(height: 8),
+        if (current != null && deviceQueue.isEmpty)
+          _PlaybackQueueTile(
+            entry: current,
+            controller: controller,
+            current: true,
           ),
-        if (upcoming.length > visible.length)
+        buildQueueList(),
+        if (upcoming.length > visibleUpcoming.length)
           const Padding(
             padding: EdgeInsets.only(top: 8),
             child: Text(
@@ -697,11 +1078,34 @@ class _PlaybackQueueTile extends StatelessWidget {
       onTap: current ? null : () => controller.playPlaybackQueueEntry(entry),
       trailing: current
           ? const Icon(Icons.graphic_eq, color: MaboyColors.primary)
-          : IconButton(
-              tooltip: 'Убрать из очереди',
-              onPressed: () =>
-                  controller.removeUpcomingPlayback(entry.playbackIndex),
-              icon: const Icon(Icons.close, size: 20),
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: 'Убрать из очереди',
+                  onPressed: () =>
+                      controller.removeUpcomingPlayback(entry.playbackIndex),
+                  icon: const Icon(Icons.close, size: 20),
+                ),
+                if (reorderIndex != null)
+                  ReorderableDragStartListener(
+                    index: reorderIndex!,
+                    child: const MouseRegion(
+                      cursor: SystemMouseCursors.grab,
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 8,
+                        ),
+                        child: Icon(
+                          Icons.drag_indicator,
+                          size: 20,
+                          color: MaboyColors.textMuted,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
             ),
     );
     return reorderIndex == null

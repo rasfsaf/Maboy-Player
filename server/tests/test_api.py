@@ -506,3 +506,49 @@ def test_favorites_sync_and_smart_merge(client):
     fav_ops = [op for op in pulled["operations"] if op["kind"] == "favorites.set"]
     # Existing tracks are protected from bulk wipeout
     assert set(fav_ops[-1]["payload"]["track_ids"]) == {t1_id, t2_id}
+
+
+def test_relay_receive_peer_offline_when_no_peer_device_online(client):
+    auth = register(client, "peer-offline@example.com")
+    track_id = str(uuid.uuid4())
+    assert send(client, auth, "track.upsert", {
+        "id": track_id,
+        "provider": "local",
+        "source_id": "phone-1",
+        "title": "offline-test.mp3",
+        "artist": None,
+    }).status_code == 200
+
+    token = auth["Authorization"].removeprefix("Bearer ")
+    with client.websocket_connect(
+        f"/relay/{track_id}/receive?token={token}&device=phone-1"
+    ) as receiver:
+        msg = receiver.receive_text()
+        assert msg == "peer_offline"
+
+
+def test_sync_presence_and_grace_period(client, monkeypatch):
+    import maboy.app
+    monkeypatch.setattr(maboy.app, "DISCONNECT_GRACE_PERIOD", 0.3)
+
+    auth = register(client, "presence-test@example.com")
+    token = auth["Authorization"].removeprefix("Bearer ")
+
+    with client.websocket_connect(f"/sync/events?token={token}&device_id=dev1") as ws1:
+        assert ws1.receive_json() == {"type": "presence", "peer_count": 0}
+
+        with client.websocket_connect(f"/sync/events?token={token}&device_id=dev2") as ws2:
+            assert ws1.receive_json() == {"type": "presence", "peer_count": 1}
+            assert ws2.receive_json() == {"type": "presence", "peer_count": 1}
+
+        # ws2 disconnected. It should remain online during grace period (0.3s)
+        import time
+        time.sleep(0.05)
+        # dev2 reconnects within grace period
+        with client.websocket_connect(f"/sync/events?token={token}&device_id=dev2") as ws2_again:
+            assert ws1.receive_json() == {"type": "presence", "peer_count": 1}
+            assert ws2_again.receive_json() == {"type": "presence", "peer_count": 1}
+
+        # Now let ws2 disconnect and wait for grace period to expire
+        time.sleep(0.4)
+        assert ws1.receive_json() == {"type": "presence", "peer_count": 0}

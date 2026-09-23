@@ -19,7 +19,7 @@ class DiscoveredAudioFile {
 }
 
 class DeviceMusicService {
-  static const MethodChannel _channel = MethodChannel('com.maboy.maboy/media');
+  static const MethodChannel _channel = MethodChannel('com.maboy.player/media');
 
   static final RegExp _audioExtRegex = RegExp(
     r'\.(mp3|m4a|aac|ogg|opus|wav|flac)$',

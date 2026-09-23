@@ -22,6 +22,15 @@ class PlaylistDetailPage extends StatefulWidget {
 class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
   final Set<String> _selectedTrackIds = {};
   bool get _isSelecting => _selectedTrackIds.isNotEmpty;
+  bool _isSearching = false;
+  final TextEditingController _searchController = TextEditingController();
+  String _searchQuery = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   void _toggleSelect(String id) {
     setState(() {
@@ -210,7 +219,33 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
           .map((id) => c.tracks.where((t) => t['id'] == id).firstOrNull)
           .whereType<Map<String, dynamic>>()
           .toList();
-      final validTrackIds = playlistTracks
+
+      // Ensure active tracks appear first and locally deleted tracks sink to the end:
+      final activePlaylistTracks = playlistTracks
+          .where((t) => !c.deletedLocallyIds.contains(t['id']))
+          .toList();
+      final deletedPlaylistTracks = playlistTracks
+          .where((t) => c.deletedLocallyIds.contains(t['id']))
+          .toList();
+      final sortedPlaylistTracks = [
+        ...activePlaylistTracks,
+        ...deletedPlaylistTracks,
+      ];
+
+      // Filter by search query if active
+      final normalizedQuery = _searchQuery.trim().toLowerCase();
+      final displayedTracks = normalizedQuery.isEmpty
+          ? sortedPlaylistTracks
+          : sortedPlaylistTracks.where((t) {
+              final title = (t['title'] as String? ?? '').toLowerCase();
+              final artist = (t['artist'] as String? ?? '').toLowerCase();
+              final album = (t['album'] as String? ?? '').toLowerCase();
+              return title.contains(normalizedQuery) ||
+                  artist.contains(normalizedQuery) ||
+                  album.contains(normalizedQuery);
+            }).toList();
+
+      final validTrackIds = displayedTracks
           .map((t) => t['id'] as String)
           .toList();
 
@@ -248,14 +283,55 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                   ),
                 ],
               )
-            : AppBar(
-                title: Text('${currentPlaylist['name']}'),
-                actions: [
-                  IconButton(
-                    icon: const Icon(Icons.add),
-                    tooltip: 'Добавить треки',
-                    onPressed: () => _showAddTracksDialog(playlistTrackIds),
-                  ),
+            : _isSearching
+                ? AppBar(
+                    leading: IconButton(
+                      icon: const Icon(Icons.arrow_back),
+                      onPressed: () {
+                        setState(() {
+                          _isSearching = false;
+                          _searchQuery = '';
+                          _searchController.clear();
+                        });
+                      },
+                    ),
+                    title: TextField(
+                      controller: _searchController,
+                      autofocus: true,
+                      decoration: InputDecoration(
+                        hintText: 'Поиск в «${currentPlaylist['name']}»...',
+                        border: InputBorder.none,
+                        hintStyle: const TextStyle(color: MaboyColors.textMuted),
+                      ),
+                      style: const TextStyle(color: Colors.white, fontSize: 16),
+                      onChanged: (val) => setState(() => _searchQuery = val),
+                    ),
+                    actions: [
+                      if (_searchQuery.isNotEmpty)
+                        IconButton(
+                          icon: const Icon(Icons.clear),
+                          onPressed: () {
+                            setState(() {
+                              _searchQuery = '';
+                              _searchController.clear();
+                            });
+                          },
+                        ),
+                    ],
+                  )
+                : AppBar(
+                    title: Text('${currentPlaylist['name']}'),
+                    actions: [
+                      IconButton(
+                        icon: const Icon(Icons.search),
+                        tooltip: 'Поиск по плейлисту',
+                        onPressed: () => setState(() => _isSearching = true),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.add),
+                        tooltip: 'Добавить треки',
+                        onPressed: () => _showAddTracksDialog(playlistTrackIds),
+                      ),
                   PopupMenuButton<String>(
                     onSelected: (action) {
                       if (action == 'rename') _renamePlaylist();
@@ -350,32 +426,40 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
               ),
               const Divider(height: 1),
               Expanded(
-                child: playlistTracks.isEmpty
+                child: displayedTracks.isEmpty
                     ? Center(
                         child: Column(
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
-                            const Icon(
-                              Icons.music_note,
+                            Icon(
+                              normalizedQuery.isNotEmpty
+                                  ? Icons.search_off
+                                  : Icons.music_note,
                               size: 48,
                               color: Colors.white30,
                             ),
                             const SizedBox(height: 12),
-                            const Text('В этом плейлисте пока нет песен'),
-                            const SizedBox(height: 12),
-                            OutlinedButton.icon(
-                              onPressed: () =>
-                                  _showAddTracksDialog(playlistTrackIds),
-                              icon: const Icon(Icons.add),
-                              label: const Text('Добавить песни из библиотеки'),
+                            Text(
+                              normalizedQuery.isNotEmpty
+                                  ? 'По запросу «$_searchQuery» ничего не найдено'
+                                  : 'В этом плейлисте пока нет песен',
                             ),
+                            if (normalizedQuery.isEmpty) ...[
+                              const SizedBox(height: 12),
+                              OutlinedButton.icon(
+                                onPressed: () =>
+                                    _showAddTracksDialog(playlistTrackIds),
+                                icon: const Icon(Icons.add),
+                                label: const Text('Добавить песни из библиотеки'),
+                              ),
+                            ],
                           ],
                         ),
                       )
                     : ReorderableListView.builder(
                         proxyDecorator: maboyReorderProxyDecorator,
                         buildDefaultDragHandles: false,
-                        itemCount: playlistTracks.length,
+                        itemCount: displayedTracks.length,
                         onReorderStart: (_) => c.beginReorder(),
                         onReorderEnd: (_) => c.endReorder(),
                         onReorder: (from, to) {
@@ -388,7 +472,7 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                           );
                         },
                         itemBuilder: (context, index) {
-                          final track = playlistTracks[index];
+                          final track = displayedTracks[index];
                           final id = track['id'] as String;
                           return TrackTile(
                             key: ValueKey('${currentPlaylist['id']}:$id'),

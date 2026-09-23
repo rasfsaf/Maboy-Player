@@ -165,10 +165,70 @@ void main() {
         controller.activePlaybackQueue
             .map((entry) => entry.track['id'])
             .toSet(),
-        {'2', '3'},
+        {'1', '2', '3'},
       );
       expect(controller.activePlaybackQueue.first.isCurrent, isTrue);
       expect(controller.hasNext, isTrue);
+    },
+  );
+
+  test(
+    'startShuffle keeps current track and mixes upcoming tracks',
+    () async {
+      final controller = AppController();
+      controller.tracks.addAll([
+        {'id': '1', 'title': 'One'},
+        {'id': '2', 'title': 'Two'},
+        {'id': '3', 'title': 'Three'},
+        {'id': '4', 'title': 'Four'},
+      ]);
+
+      controller.playingId = '2';
+      final sourceBeforeShuffle = controller.player.audioSource;
+
+      await controller.startShuffle();
+
+      expect(controller.isShuffle, isTrue);
+      expect(controller.playingId, '2');
+      expect(controller.player.audioSource, same(sourceBeforeShuffle));
+      expect(controller.activePlaybackQueue.first.track['id'], '2');
+      expect(controller.activePlaybackQueue.first.isCurrent, isTrue);
+      expect(
+        controller.activePlaybackQueue.map((entry) => entry.track['id']).toSet(),
+        {'1', '2', '3', '4'},
+      );
+    },
+  );
+
+  test(
+    'startShuffle with playlist keeps current track and mixes playlist tracks',
+    () async {
+      final controller = AppController();
+      controller.tracks.addAll([
+        {'id': '1', 'title': 'One'},
+        {'id': '2', 'title': 'Two'},
+        {'id': '3', 'title': 'Three'},
+      ]);
+      controller.playlists.add({
+        'id': 'pl-1',
+        'name': 'Folder',
+        'sort_key': 0,
+        'track_ids': ['1', '2', '3'],
+      });
+
+      controller.playingId = '1';
+      controller.playingFolder = 'pl-1';
+
+      await controller.startShuffle(folderId: 'pl-1');
+
+      expect(controller.isShuffle, isTrue);
+      expect(controller.playingId, '1');
+      expect(controller.playingFolder, 'pl-1');
+      expect(controller.activePlaybackQueue.first.track['id'], '1');
+      expect(
+        controller.activePlaybackQueue.map((entry) => entry.track['id']).toSet(),
+        {'1', '2', '3'},
+      );
     },
   );
 

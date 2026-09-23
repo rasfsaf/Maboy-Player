@@ -25,8 +25,20 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   FlutterWindow window(project);
-  Win32Window::Point origin(10, 10);
-  Win32Window::Size size(1280, 720);
+  int screen_width = GetSystemMetrics(SM_CXSCREEN);
+  int screen_height = GetSystemMetrics(SM_CYSCREEN);
+  int window_width = 1440;
+  int window_height = 880;
+  if (screen_width > 0 && window_width > screen_width) {
+    window_width = (screen_width * 9) / 10;
+  }
+  if (screen_height > 0 && window_height > screen_height) {
+    window_height = (screen_height * 9) / 10;
+  }
+  int origin_x = (screen_width > window_width) ? (screen_width - window_width) / 2 : 10;
+  int origin_y = (screen_height > window_height) ? (screen_height - window_height) / 2 : 10;
+  Win32Window::Point origin(origin_x, origin_y);
+  Win32Window::Size size(window_width, window_height);
   if (!window.Create(L"maboy", origin, size)) {
     return EXIT_FAILURE;
   }
