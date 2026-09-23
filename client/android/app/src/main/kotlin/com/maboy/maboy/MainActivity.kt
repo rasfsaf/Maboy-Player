@@ -27,6 +27,8 @@ class MainActivity : FlutterActivity() {
     private var permissionCallback: MethodChannel.Result? = null
     private val PERMISSION_REQUEST_CODE = 1002
 
+    private var audioDeviceCallback: android.media.AudioDeviceCallback? = null
+
     private val noisyReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
             if (AudioManager.ACTION_AUDIO_BECOMING_NOISY == intent?.action) {
@@ -37,12 +39,62 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        registerAudioMonitoring()
+        handleIntent(intent)
+    }
+
+    private fun registerAudioMonitoring() {
         try {
-            registerReceiver(noisyReceiver, IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(
+                    noisyReceiver,
+                    IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
+                    Context.RECEIVER_NOT_EXPORTED
+                )
+            } else {
+                registerReceiver(
+                    noisyReceiver,
+                    IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
+                )
+            }
         } catch (error: Exception) {
             Log.w("maboy", "Unable to register noisy-audio receiver", error)
         }
-        handleIntent(intent)
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                if (audioManager != null) {
+                    val callback = object : android.media.AudioDeviceCallback() {
+                        override fun onAudioDevicesRemoved(removedDevices: Array<out android.media.AudioDeviceInfo>?) {
+                            super.onAudioDevicesRemoved(removedDevices)
+                            if (removedDevices == null) return
+                            for (device in removedDevices) {
+                                when (device.type) {
+                                    android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                                    android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                                    android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                                    android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+                                    android.media.AudioDeviceInfo.TYPE_USB_HEADSET,
+                                    android.media.AudioDeviceInfo.TYPE_USB_DEVICE,
+                                    android.media.AudioDeviceInfo.TYPE_BLE_HEADSET,
+                                    android.media.AudioDeviceInfo.TYPE_BLE_SPEAKER,
+                                    android.media.AudioDeviceInfo.TYPE_HEARING_AID -> {
+                                        Log.i("maboy", "Audio device disconnected (${device.type}), triggering pause")
+                                        mediaChannel?.invokeMethod("onAudioBecomingNoisy", null)
+                                        return
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    audioDeviceCallback = callback
+                    audioManager.registerAudioDeviceCallback(callback, null)
+                }
+            } catch (error: Exception) {
+                Log.w("maboy", "Unable to register audio device callback", error)
+            }
+        }
     }
 
     override fun onDestroy() {
@@ -50,6 +102,15 @@ class MainActivity : FlutterActivity() {
             unregisterReceiver(noisyReceiver)
         } catch (error: Exception) {
             Log.w("maboy", "Unable to unregister noisy-audio receiver", error)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && audioDeviceCallback != null) {
+            try {
+                val audioManager = getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+                audioDeviceCallback?.let { audioManager?.unregisterAudioDeviceCallback(it) }
+            } catch (error: Exception) {
+                Log.w("maboy", "Unable to unregister audio device callback", error)
+            }
+            audioDeviceCallback = null
         }
         super.onDestroy()
     }

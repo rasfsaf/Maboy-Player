@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 
@@ -18,16 +19,42 @@ class _TrackActionsMenu extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final menu = PopupMenuButton<String>(
-      tooltip: 'Действия',
-      onSelected: onSelected,
-      itemBuilder: itemBuilder,
-      icon: const Icon(Icons.more_vert),
+    final menu = Builder(
+      builder: (buttonContext) {
+        return Semantics(
+          label: 'Действия',
+          button: true,
+          child: IconButton(
+            icon: const Icon(Icons.more_vert),
+            onPressed: () async {
+              final button = buttonContext.findRenderObject() as RenderBox;
+              final overlay =
+                  Overlay.of(buttonContext).context.findRenderObject()
+                      as RenderBox;
+              final rect =
+                  button.localToGlobal(Offset.zero, ancestor: overlay) &
+                  button.size;
+              final selected = await showMenu<String>(
+                context: buttonContext,
+                position: RelativeRect.fromRect(
+                  rect,
+                  Offset.zero & overlay.size,
+                ),
+                items: itemBuilder(buttonContext),
+              );
+              if (selected != null && buttonContext.mounted) {
+                onSelected(selected);
+              }
+            },
+          ),
+        );
+      },
     );
-    if (dragIndex == null) return menu;
-    // Android users start reordering by holding the three-dot button. A
-    // delayed listener preserves the normal short-tap menu action.
-    return ReorderableDelayedDragStartListener(index: dragIndex!, child: menu);
+    // Claim movement on the actions button before the parent scrollable does.
+    // A pointer released without movement still opens the menu via onPressed.
+    return dragIndex == null
+        ? menu
+        : ReorderableDragStartListener(index: dragIndex!, child: menu);
   }
 }
 
@@ -227,6 +254,8 @@ class TrackTile extends StatelessWidget {
         remoteStatus != null && remoteStatus['status'] == 'deleted';
     final remoteDevice = remoteStatus?['device_name'] ?? 'другом устройстве';
 
+    final failedReason = controller.failedDownloads[id];
+
     String locationStatus;
     Color? statusColor;
     IconData? statusIcon;
@@ -235,6 +264,10 @@ class TrackTile extends StatelessWidget {
       locationStatus = 'Удалено на этом устройстве';
       statusColor = MaboyColors.warning;
       statusIcon = Icons.cloud_off;
+    } else if (failedReason != null) {
+      locationStatus = failedReason;
+      statusColor = MaboyColors.danger;
+      statusIcon = Icons.error_outline;
     } else if (isRemoteDeleted) {
       locationStatus = 'Удалено на $remoteDevice';
       statusColor = MaboyColors.textMuted;
@@ -266,144 +299,163 @@ class TrackTile extends StatelessWidget {
     }
 
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: ListTile(
-        selected: isSelected,
-        selectedTileColor: MaboyColors.primary.withValues(alpha: 0.12),
-        leading: leadingWidget,
-        title: Row(
-          children: [
-            Expanded(
-              child: MarqueeText(
-                '${track['title']}',
-                style: TextStyle(
-                  color: isPlaying
-                      ? Theme.of(context).colorScheme.primary
-                      : null,
-                  fontWeight: isPlaying ? FontWeight.bold : FontWeight.normal,
-                ),
-              ),
-            ),
-            if (isDownloading)
-              Padding(
-                padding: const EdgeInsets.only(left: 6),
-                child: SizedBox(
-                  width: 14,
-                  height: 14,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    value: (progress != null && progress > 0) ? progress : null,
+      padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
+      child: Material(
+        color: MaboyColors.surface.withValues(alpha: 0.48),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+          side: BorderSide(color: Colors.white.withValues(alpha: 0.045)),
+        ),
+        child: ListTile(
+          selected: isSelected,
+          selectedTileColor: MaboyColors.primary.withValues(alpha: 0.12),
+          leading: leadingWidget,
+          title: Row(
+            children: [
+              Expanded(
+                child: MarqueeText(
+                  '${track['title']}',
+                  style: TextStyle(
+                    color: isPlaying
+                        ? Theme.of(context).colorScheme.primary
+                        : null,
+                    fontWeight: isPlaying ? FontWeight.w800 : FontWeight.w600,
                   ),
                 ),
               ),
-          ],
-        ),
-        subtitle: Row(
-          children: [
-            if (statusIcon != null) ...[
-              Icon(statusIcon, size: 13, color: statusColor),
-              const SizedBox(width: 4),
-            ],
-            Expanded(
-              child: MarqueeText(
-                [
-                  track['artist'],
-                  if (track['album'] != null &&
-                      track['album'] != track['artist'])
-                    track['album'],
-                  locationStatus,
-                ].where((v) => v != null && '$v'.isNotEmpty).join(' • '),
-                style: TextStyle(color: statusColor),
-              ),
-            ),
-          ],
-        ),
-        onTap: () {
-          if (isSelecting) {
-            onSelect?.call();
-          } else {
-            controller.playTrack(
-              track,
-              folderId: folderId,
-              playbackIds: playbackIds,
-            );
-          }
-        },
-        onLongPress: onLongPress,
-        trailing: isSelecting
-            ? null
-            : Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    tooltip: controller.isFavorite(id)
-                        ? 'Убрать из избранного'
-                        : 'В избранное',
-                    onPressed: () => controller.toggleFavorite(id),
-                    icon: Icon(
-                      controller.isFavorite(id)
-                          ? Icons.favorite
-                          : Icons.favorite_border,
-                      color: controller.isFavorite(id)
-                          ? MaboyColors.danger
+              if (isDownloading)
+                Padding(
+                  padding: const EdgeInsets.only(left: 6),
+                  child: SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      value: (progress != null && progress > 0)
+                          ? progress
                           : null,
                     ),
                   ),
-                  _TrackActionsMenu(
-                    dragIndex: dragIndex,
-                    onSelected: (action) async {
-                      if (action == 'next') {
-                        controller.addToQueue(id, next: true);
-                      } else if (action == 'last') {
-                        controller.addToQueue(id, next: false);
-                      } else if (action == 'add_to_playlist') {
-                        await showAddToPlaylistDialog(context, controller, [
-                          id,
-                        ]);
-                      } else if (action == 'remove_from_playlist') {
-                        onRemoveFromPlaylist?.call();
-                      } else if (action == 'delete_locally') {
-                        await confirmDeleteLocally(context, controller, [id]);
-                      } else if (action == 'restore_locally') {
-                        await controller.restoreLocally(id);
-                      }
-                    },
-                    itemBuilder: (_) => [
-                      const PopupMenuItem(
-                        value: 'next',
-                        child: Text('Играть следующим'),
-                      ),
-                      const PopupMenuItem(
-                        value: 'last',
-                        child: Text('Добавить в очередь'),
-                      ),
-                      const PopupMenuItem(
-                        value: 'add_to_playlist',
-                        child: Text('Добавить в плейлист...'),
-                      ),
-                      if (onRemoveFromPlaylist != null)
-                        const PopupMenuItem(
-                          value: 'remove_from_playlist',
-                          child: Text('Убрать из плейлиста'),
-                        ),
-                      const PopupMenuDivider(),
-                      if (isDeletedLocally)
-                        const PopupMenuItem(
-                          value: 'restore_locally',
-                          child: Text('Скачать заново'),
-                        )
-                      else
-                        const PopupMenuItem(
-                          value: 'delete_locally',
-                          child: Text(
-                            'Удалить с этого устройства',
-                            style: TextStyle(color: Colors.redAccent),
-                          ),
-                        ),
-                    ],
-                  ),
-                ],
+                ),
+            ],
+          ),
+          subtitle: Row(
+            children: [
+              if (statusIcon != null) ...[
+                Icon(statusIcon, size: 13, color: statusColor),
+                const SizedBox(width: 4),
+              ],
+              Expanded(
+                child: MarqueeText(
+                  [
+                    track['artist'],
+                    if (track['album'] != null &&
+                        track['album'] != track['artist'])
+                      track['album'],
+                    locationStatus,
+                  ].where((v) => v != null && '$v'.isNotEmpty).join(' • '),
+                  style: TextStyle(color: statusColor),
+                ),
               ),
+            ],
+          ),
+          onTap: () {
+            if (isSelecting) {
+              onSelect?.call();
+            } else {
+              controller.playTrack(
+                track,
+                folderId: folderId,
+                playbackIds: playbackIds,
+              );
+            }
+          },
+          onLongPress: onLongPress,
+          trailing: isSelecting
+              ? null
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: controller.isFavorite(id)
+                          ? 'Убрать из избранного'
+                          : 'В избранное',
+                      onPressed: () => controller.toggleFavorite(id),
+                      icon: Icon(
+                        controller.isFavorite(id)
+                            ? Icons.favorite
+                            : Icons.favorite_border,
+                        color: controller.isFavorite(id)
+                            ? MaboyColors.danger
+                            : null,
+                      ),
+                    ),
+                    _TrackActionsMenu(
+                      dragIndex: dragIndex,
+                      onSelected: (action) async {
+                        if (action == 'download_youtube') {
+                          unawaited(
+                            controller.downloadYouTubeTrack(track, force: true),
+                          );
+                        } else if (action == 'next') {
+                          controller.addToQueue(id, next: true);
+                        } else if (action == 'last') {
+                          controller.addToQueue(id, next: false);
+                        } else if (action == 'add_to_playlist') {
+                          await showAddToPlaylistDialog(context, controller, [
+                            id,
+                          ]);
+                        } else if (action == 'remove_from_playlist') {
+                          onRemoveFromPlaylist?.call();
+                        } else if (action == 'delete_locally') {
+                          await confirmDeleteLocally(context, controller, [id]);
+                        } else if (action == 'restore_locally') {
+                          await controller.restoreLocally(id);
+                        }
+                      },
+                      itemBuilder: (_) => [
+                        if (track['provider'] == 'youtube' &&
+                            !controller.localFiles.containsKey(id))
+                          const PopupMenuItem(
+                            value: 'download_youtube',
+                            child: Text('Скачать MP3'),
+                          ),
+                        const PopupMenuItem(
+                          value: 'next',
+                          child: Text('Играть следующим'),
+                        ),
+                        const PopupMenuItem(
+                          value: 'last',
+                          child: Text('Добавить в очередь'),
+                        ),
+                        const PopupMenuItem(
+                          value: 'add_to_playlist',
+                          child: Text('Добавить в плейлист...'),
+                        ),
+                        if (onRemoveFromPlaylist != null)
+                          const PopupMenuItem(
+                            value: 'remove_from_playlist',
+                            child: Text('Убрать из плейлиста'),
+                          ),
+                        const PopupMenuDivider(),
+                        if (isDeletedLocally)
+                          const PopupMenuItem(
+                            value: 'restore_locally',
+                            child: Text('Скачать заново'),
+                          )
+                        else
+                          const PopupMenuItem(
+                            value: 'delete_locally',
+                            child: Text(
+                              'Удалить с этого устройства',
+                              style: TextStyle(color: Colors.redAccent),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ],
+                ),
+        ),
       ),
     );
   }

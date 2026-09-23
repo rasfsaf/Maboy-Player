@@ -9,13 +9,15 @@ from datetime import datetime
 from typing import Annotated, Generator, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .db import Base, engine, get_db, SessionLocal
-from .models import Operation, Playlist, PlaylistTrack, QueueItem, Token, Track, User
+from .models import FavoriteTrack, Operation, Playlist, PlaylistTrack, QueueItem, Token, Track, User
+from .youtube_media import YouTubeDownloadError, ensure_youtube_audio
 
 # In-memory routing only: audio bytes are never persisted on the gateway.
 # A disconnected sender can reconnect; the receiver can retry indefinitely.
@@ -26,10 +28,33 @@ source_finished: dict[tuple[str, str], asyncio.Event] = {}
 sync_clients: dict[str, set[WebSocket]] = {}
 
 
+async def prefetch_youtube_audio(source_id: str):
+    try:
+        await asyncio.to_thread(ensure_youtube_audio, source_id)
+    except Exception:
+        pass
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # MVP bootstrap; replace with versioned migrations before changing a deployed schema.
     Base.metadata.create_all(engine)
+    with SessionLocal() as db:
+        fav_count = db.scalar(select(func.count(FavoriteTrack.id)))
+        if fav_count == 0:
+            for user in db.scalars(select(User)).all():
+                last_op = db.scalar(
+                    select(Operation)
+                    .where(Operation.user_id == user.id, Operation.kind == "favorites.set")
+                    .order_by(Operation.version.desc())
+                    .limit(1)
+                )
+                if last_op and isinstance(last_op.payload, dict) and "track_ids" in last_op.payload:
+                    t_ids = last_op.payload.get("track_ids", [])
+                    for idx, t_id in enumerate(t_ids):
+                        if (t := db.get(Track, t_id)) and t.user_id == user.id:
+                            db.add(FavoriteTrack(user_id=user.id, track_id=t_id, sort_key=idx))
+            db.commit()
     yield
 
 
@@ -44,7 +69,7 @@ class Credentials(BaseModel):
 class Mutation(BaseModel):
     operation_id: uuid.UUID
     kind: Literal[
-        "track.upsert", "playlist.upsert", "playlist.delete", "playlist.set_tracks", "queue.set",
+        "track.upsert", "track.set_order", "playlist.upsert", "playlist.delete", "playlist.set_tracks", "queue.set",
         "favorites.set", "history.add", "track.device_status",
         "equalizer.preset.upsert", "equalizer.preset.delete",
     ]
@@ -94,7 +119,7 @@ def relay_identity(db: Session, token: str, track_id: str) -> tuple[str, str] | 
         track = db.get(Track, str(uuid.UUID(track_id)))
     except ValueError:
         return None
-    if track is None or track.user_id != credential.user_id or track.provider != "local":
+    if track is None or track.user_id != credential.user_id or track.provider not in ("local", "youtube"):
         return None
     return credential.user_id, track.id
 
@@ -314,6 +339,12 @@ def apply_mutation(db: Session, user: User, mutation: Mutation):
                     existing_source.title, existing_source.artist = item.title, item.artist
                 else:
                     db.add(item)
+        elif mutation.kind == "track.set_order":
+            ids = [str(uuid.UUID(track_id)) for track_id in p["track_ids"]]
+            if not unique_ids(ids):
+                raise ValueError("Duplicate tracks in order")
+            if any((track := db.get(Track, track_id)) is None or track.user_id != user.id for track_id in ids):
+                raise ValueError("Invalid track order")
         elif mutation.kind == "playlist.upsert":
             item_id = str(uuid.UUID(p["id"]))
             name = str(p["name"]).strip()
@@ -373,6 +404,45 @@ def apply_mutation(db: Session, user: User, mutation: Mutation):
                 raise ValueError("Duplicate favorite tracks")
             if any(db.get(Track, item) is not None and db.get(Track, item).user_id != user.id for item in track_ids):
                 raise ValueError("Access denied to tracks of another user")
+            valid_incoming = [
+                t_id for t_id in track_ids
+                if (t := db.get(Track, t_id)) and t.user_id == user.id
+            ]
+            existing_rows = db.scalars(
+                select(FavoriteTrack)
+                .where(FavoriteTrack.user_id == user.id)
+                .order_by(FavoriteTrack.sort_key)
+            ).all()
+            existing_ids = [r.track_id for r in existing_rows]
+
+            added = [t for t in valid_incoming if t not in existing_ids]
+            removed = set(existing_ids) - set(valid_incoming)
+
+            if added:
+                merged_ids = existing_ids + added
+            elif len(removed) == 1:
+                removed_id = next(iter(removed))
+                merged_ids = [t for t in existing_ids if t != removed_id]
+            elif not valid_incoming and len(existing_ids) <= 1:
+                merged_ids = []
+            else:
+                merged_ids = existing_ids
+
+            mutation.payload["track_ids"] = merged_ids
+
+            for old in existing_rows:
+                db.delete(old)
+            db.flush()
+            for index, t_id in enumerate(merged_ids):
+                db.add(FavoriteTrack(user_id=user.id, track_id=t_id, sort_key=index))
+
+            for t_id in added:
+                t = db.get(Track, t_id)
+                if t and t.provider == "youtube" and t.source_id:
+                    try:
+                        asyncio.create_task(prefetch_youtube_audio(t.source_id))
+                    except RuntimeError:
+                        pass
         elif mutation.kind == "track.device_status":
             str(uuid.UUID(p["track_id"]))
             if not str(p.get("device_id", "")).strip():
@@ -447,3 +517,27 @@ def pull(after: int = 0, limit: int = 100, user: User = Depends(current_user), d
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/youtube/tracks/{track_id}/audio")
+async def youtube_audio(
+    track_id: str,
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+):
+    try:
+        normalized_id = str(uuid.UUID(track_id))
+    except ValueError as exc:
+        raise HTTPException(404, "Track not found") from exc
+    track = db.get(Track, normalized_id)
+    if track is None or track.user_id != user.id or track.provider != "youtube":
+        raise HTTPException(404, "Track not found")
+    try:
+        audio_file = await ensure_youtube_audio(track.source_id)
+    except YouTubeDownloadError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    return FileResponse(
+        audio_file,
+        media_type="audio/mpeg",
+        filename=f"{track.id}.mp3",
+    )

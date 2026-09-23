@@ -3,9 +3,13 @@ param(
     [ValidateSet("all", "windows", "android")]
     [string]$Platform = "all",
 
-    [switch]$UpdateIcons = $true,
+    [switch]$UpdateIcons = $false,
 
-    [switch]$Clean = $false
+    [switch]$Clean = $false,
+
+    [switch]$Local = $false,
+
+    [string]$VPSHost = "happ-germany"
 )
 
 $ErrorActionPreference = "Stop"
@@ -16,18 +20,25 @@ Write-Host "=========================================" -ForegroundColor Cyan
 Write-Host " Maboy Player - Build System             " -ForegroundColor Cyan
 Write-Host "=========================================" -ForegroundColor Cyan
 
-# 1. Locate Flutter executable
+# 1. Locate Flutter executable if local build is needed
 $FlutterCmd = $null
-if (Get-Command flutter -ErrorAction SilentlyContinue) {
-    $FlutterCmd = "flutter"
-} elseif (Test-Path "C:\src\flutter\bin\flutter.bat") {
-    $FlutterCmd = "C:\src\flutter\bin\flutter.bat"
-} else {
-    Write-Error "Flutter SDK not found! Please ensure Flutter is installed at C:\src\flutter or in PATH."
-    exit 1
+if ($Local -or $Platform -eq "windows" -or $Platform -eq "all") {
+    if (Get-Command flutter -ErrorAction SilentlyContinue) {
+        $FlutterCmd = "flutter"
+    } elseif (Test-Path "C:\src\flutter\bin\flutter.bat") {
+        $FlutterCmd = "C:\src\flutter\bin\flutter.bat"
+    } else {
+        if ($Platform -eq "windows" -or ($Platform -eq "all" -and $Local)) {
+            Write-Error "Flutter SDK not found locally! Please ensure Flutter is installed at C:\src\flutter or in PATH."
+            exit 1
+        }
+    }
 }
-
-Write-Host "[+] Using Flutter: $FlutterCmd" -ForegroundColor Green
+if ($FlutterCmd) {
+    Write-Host "[+] Using local Flutter: $FlutterCmd" -ForegroundColor Green
+} else {
+    Write-Host "[+] Local Flutter not found/not required (building on VPS: $VPSHost)" -ForegroundColor Green
+}
 
 # 2. Update icons if requested
 if ($UpdateIcons) {
@@ -70,20 +81,22 @@ if (Test-Path $PubspecPath) {
     }
 }
 
-# 5. Resolve dependencies
-Write-Host "`n[+] Resolving Flutter dependencies..." -ForegroundColor Yellow
-Push-Location $ClientDir
-try {
-    & $FlutterCmd pub get
-    if ($LASTEXITCODE -ne 0) {
-        Write-Error "flutter pub get failed with code $LASTEXITCODE"
-        exit $LASTEXITCODE
+# 5. Resolve dependencies locally if local build requested
+if ($Local -or $Platform -eq "windows") {
+    Write-Host "`n[+] Resolving Flutter dependencies locally..." -ForegroundColor Yellow
+    Push-Location $ClientDir
+    try {
+        & $FlutterCmd pub get
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "flutter pub get failed with code $LASTEXITCODE"
+            exit $LASTEXITCODE
+        }
+    } finally {
+        Pop-Location
     }
-} finally {
-    Pop-Location
 }
 
-# 5. Build Windows
+# 6. Build Windows
 if ($Platform -eq "all" -or $Platform -eq "windows") {
     Write-Host "`n[+] Building Windows Release (maboy.exe)..." -ForegroundColor Yellow
     # MSVC cannot replace an executable that is still running from the build
@@ -144,62 +157,134 @@ if ($Platform -eq "all" -or $Platform -eq "windows") {
     }
 }
 
-# 6. Build Android
-if ($Platform -eq "all" -or $Platform -eq "android") {
-    # Ensure libmpv.so binaries are present for Android
-    Write-Host "`n[+] Ensuring libmpv.so binaries are present for Android..." -ForegroundColor Yellow
-    $mpvAbis = @{
-        "arm64-v8a"  = @{ url = "https://github.com/ales-drnz/mpv_audio_kit/releases/download/libmpv-r13/libmpv_android-arm64-v8a.so"; sha = "c96e671c6d4c96fe1be53e13606b8cd9aaac4088e70e7db7512ead3c7af0dc68" }
-        "armeabi-v7a" = @{ url = "https://github.com/ales-drnz/mpv_audio_kit/releases/download/libmpv-r13/libmpv_android-armeabi-v7a.so"; sha = "569038adb078b1d9932f3cba6c03af30603a8fe7d9c9f7f8560b2eee5e64bf44" }
-        "x86_64"     = @{ url = "https://github.com/ales-drnz/mpv_audio_kit/releases/download/libmpv-r13/libmpv_android-x86_64.so"; sha = "fceebe1b88003ee24b5c27d147e0f15750654a31c204de077e3f5ad564315803" }
+# 7. Portable player zip. Starts locally right after the EXE and does not
+# wait for the VPS APK. The job is collected after Android finishes.
+$ShareZipJob = $null
+if ($Platform -eq "all" -or $Platform -eq "windows") {
+    $ZipScript = Join-Path $ScriptDir "tools\package_portable_zip.ps1"
+    if (-not (Test-Path $ZipScript)) {
+        Write-Error "Portable zip packager not found: $ZipScript"
+        exit 1
     }
-    $jniBase = Join-Path $ClientDir "android\app\src\main\jniLibs"
-    $pubJniBase = "$env:LOCALAPPDATA\Pub\Cache\hosted\pub.dev\mpv_audio_kit-0.4.6\android\src\main\jniLibs"
-    foreach ($abi in $mpvAbis.Keys) {
-        $abiDir = Join-Path $jniBase $abi
-        if (-not (Test-Path $abiDir)) { New-Item -ItemType Directory -Path $abiDir -Force | Out-Null }
-        $target = Join-Path $abiDir "libmpv.so"
-        $info = $mpvAbis[$abi]
-        $needDownload = $true
-        if (Test-Path $target) {
-            $hash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLower()
-            if ($hash -eq $info.sha) { $needDownload = $false }
-        }
-        if ($needDownload) {
-            Write-Host "    Downloading libmpv.so for $abi..." -ForegroundColor Cyan
-            Invoke-WebRequest -Uri $info.url -OutFile $target
-            $hash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLower()
-            if ($hash -ne $info.sha) {
-                Remove-Item $target -Force
-                throw "Hash mismatch for $abi"
-            }
-        }
-    }
-    if (Test-Path (Split-Path -Parent $pubJniBase)) {
-        Copy-Item -Path "$jniBase\*" -Destination $pubJniBase -Recurse -Force -ErrorAction SilentlyContinue
-    }
-    Write-Host "[OK] libmpv.so binaries verified for Android ABIs." -ForegroundColor Green
+    Write-Host "`n[+] Starting portable player zip in the background..." -ForegroundColor Yellow
+    $ShareZipStarted = Get-Date
+    $ShareZipJob = Start-Job -Name "maboy-portable-zip" -ScriptBlock {
+        param($Script, $Root)
+        & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Script -ProjectRoot $Root
+        if ($LASTEXITCODE -ne 0) { throw "portable zip failed with code $LASTEXITCODE" }
+    } -ArgumentList $ZipScript, $ScriptDir
+}
 
-    Write-Host "`n[+] Building Android Release APK (maboy.apk)..." -ForegroundColor Yellow
-    Push-Location $ClientDir
-    try {
-        & $FlutterCmd build apk --release
+# 8. Build Android
+if ($Platform -eq "all" -or $Platform -eq "android") {
+    if (-not $Local) {
+        Write-Host "`n[+] Building Android Release APK on VPS ($VPSHost)..." -ForegroundColor Yellow
+        Write-Host "    1. Preparing VPS build workspace (/opt/maboy/build)..." -ForegroundColor Cyan
+        ssh $VPSHost "mkdir -p /opt/maboy/build/client /opt/maboy/build/gradle_cache /opt/maboy/build/pub_cache /opt/maboy/build/android-ndk"
         if ($LASTEXITCODE -ne 0) {
-            Write-Error "Android build failed with code $LASTEXITCODE"
+            Write-Error "Failed to connect to VPS ($VPSHost)"
             exit $LASTEXITCODE
         }
-    } finally {
-        Pop-Location
-    }
 
-    $ApkSrc = Join-Path $ClientDir "build\app\outputs\flutter-apk\app-release.apk"
-    if (Test-Path $ApkSrc) {
+        Write-Host "    2. Syncing client sources to VPS..." -ForegroundColor Cyan
+        $TempTar = Join-Path $env:TEMP "maboy_client_$([System.Guid]::NewGuid().ToString('N')).tar.gz"
+        try {
+            & tar.exe -czf $TempTar --exclude="build" --exclude=".gradle" --exclude=".dart_tool" --exclude="*.exe" --exclude="*.dll" --exclude="ephemeral" --exclude="*.pdb" --exclude="*.lib" --exclude="*.obj" --exclude="*.ilk" -C $ClientDir .
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Failed to create client tarball"
+                exit $LASTEXITCODE
+            }
+            scp $TempTar "${VPSHost}:/tmp/maboy_client.tar.gz"
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Failed to upload client tarball to VPS"
+                exit $LASTEXITCODE
+            }
+            ssh $VPSHost "rm -rf /opt/maboy/build/client/* && tar -xzf /tmp/maboy_client.tar.gz -C /opt/maboy/build/client && rm -f /tmp/maboy_client.tar.gz /opt/maboy/build/client/android/local.properties"
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Failed to extract client sources on VPS"
+                exit $LASTEXITCODE
+            }
+        } finally {
+            if (Test-Path $TempTar) {
+                Remove-Item $TempTar -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        Write-Host "    3. Executing Docker build with ghcr.io/cirruslabs/flutter:stable on VPS..." -ForegroundColor Cyan
+        $DockerBuildCmd = "docker run --rm -v /opt/maboy/build/client:/build -v /opt/maboy/build/pub_cache:/root/.pub-cache -v /opt/maboy/build/gradle_cache:/root/.gradle -v /opt/maboy/build/android-ndk:/opt/android-sdk-linux/ndk -w /build ghcr.io/cirruslabs/flutter:stable bash -c 'flutter pub get && mkdir -p /root/.pub-cache/hosted/pub.dev/mpv_audio_kit-0.4.6/android/src/main/ && cp -r /build/android/app/src/main/jniLibs /root/.pub-cache/hosted/pub.dev/mpv_audio_kit-0.4.6/android/src/main/ && flutter build apk --release'"
+        ssh $VPSHost $DockerBuildCmd
+        if ($LASTEXITCODE -ne 0) {
+            Write-Error "VPS Docker Android build failed with code $LASTEXITCODE"
+            exit $LASTEXITCODE
+        }
+
+        Write-Host "    4. Downloading release APK to project root..." -ForegroundColor Cyan
         $ApkDest = Join-Path $ScriptDir "maboy.apk"
-        Copy-Item -Path $ApkSrc -Destination $ApkDest -Force
-        Write-Host "[OK] Android release APK updated: $ApkDest" -ForegroundColor Green
+        scp "${VPSHost}:/opt/maboy/build/client/build/app/outputs/flutter-apk/app-release.apk" $ApkDest
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path $ApkDest)) {
+            Write-Error "Failed to download maboy.apk from VPS"
+            exit 1
+        }
+        Write-Host "[OK] Android release APK updated from VPS: $ApkDest" -ForegroundColor Green
+
+        # Clean VPS temporary intermediate files to save disk space
+        ssh $VPSHost "rm -rf /opt/maboy/build/client/build/app/intermediates /opt/maboy/build/client/build/app/tmp 2>/dev/null || true"
     } else {
-        Write-Error "Android APK not found at $ApkSrc"
-        exit 1
+        # Ensure libmpv.so binaries are present for Android
+        Write-Host "`n[+] Ensuring libmpv.so binaries are present for Android..." -ForegroundColor Yellow
+        $mpvAbis = @{
+            "arm64-v8a"  = @{ url = "https://github.com/ales-drnz/mpv_audio_kit/releases/download/libmpv-r13/libmpv_android-arm64-v8a.so"; sha = "c96e671c6d4c96fe1be53e13606b8cd9aaac4088e70e7db7512ead3c7af0dc68" }
+            "armeabi-v7a" = @{ url = "https://github.com/ales-drnz/mpv_audio_kit/releases/download/libmpv-r13/libmpv_android-armeabi-v7a.so"; sha = "569038adb078b1d9932f3cba6c03af30603a8fe7d9c9f7f8560b2eee5e64bf44" }
+            "x86_64"     = @{ url = "https://github.com/ales-drnz/mpv_audio_kit/releases/download/libmpv-r13/libmpv_android-x86_64.so"; sha = "fceebe1b88003ee24b5c27d147e0f15750654a31c204de077e3f5ad564315803" }
+        }
+        $jniBase = Join-Path $ClientDir "android\app\src\main\jniLibs"
+        $pubJniBase = "$env:LOCALAPPDATA\Pub\Cache\hosted\pub.dev\mpv_audio_kit-0.4.6\android\src\main\jniLibs"
+        foreach ($abi in $mpvAbis.Keys) {
+            $abiDir = Join-Path $jniBase $abi
+            if (-not (Test-Path $abiDir)) { New-Item -ItemType Directory -Path $abiDir -Force | Out-Null }
+            $target = Join-Path $abiDir "libmpv.so"
+            $info = $mpvAbis[$abi]
+            $needDownload = $true
+            if (Test-Path $target) {
+                $hash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLower()
+                if ($hash -eq $info.sha) { $needDownload = $false }
+            }
+            if ($needDownload) {
+                Write-Host "    Downloading libmpv.so for $abi..." -ForegroundColor Cyan
+                Invoke-WebRequest -Uri $info.url -OutFile $target
+                $hash = (Get-FileHash $target -Algorithm SHA256).Hash.ToLower()
+                if ($hash -ne $info.sha) {
+                    Remove-Item $target -Force
+                    throw "Hash mismatch for $abi"
+                }
+            }
+        }
+        if (Test-Path (Split-Path -Parent $pubJniBase)) {
+            Copy-Item -Path "$jniBase\*" -Destination $pubJniBase -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        Write-Host "[OK] libmpv.so binaries verified for Android ABIs." -ForegroundColor Green
+
+        Write-Host "`n[+] Building Android Release APK locally (maboy.apk)..." -ForegroundColor Yellow
+        Push-Location $ClientDir
+        try {
+            & $FlutterCmd build apk --release
+            if ($LASTEXITCODE -ne 0) {
+                Write-Error "Android build failed with code $LASTEXITCODE"
+                exit $LASTEXITCODE
+            }
+        } finally {
+            Pop-Location
+        }
+
+        $ApkSrc = Join-Path $ClientDir "build\app\outputs\flutter-apk\app-release.apk"
+        if (Test-Path $ApkSrc) {
+            $ApkDest = Join-Path $ScriptDir "maboy.apk"
+            Copy-Item -Path $ApkSrc -Destination $ApkDest -Force
+            Write-Host "[OK] Android release APK updated: $ApkDest" -ForegroundColor Green
+        } else {
+            Write-Error "Android APK not found at $ApkSrc"
+            exit 1
+        }
     }
 }
 
@@ -218,6 +303,20 @@ foreach ($dir in $IntermediatesToClean) {
 Get-ChildItem -Path $ScriptDir -Directory -Recurse -Filter "__pycache__" -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 Get-ChildItem -Path $ScriptDir -File -Recurse -Include "*.pyc", "*.pyo" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 Write-Host "[OK] Intermediate cache cleared." -ForegroundColor Green
+
+if ($ShareZipJob) {
+    Write-Host "`n[+] Waiting for the portable player zip..." -ForegroundColor Yellow
+    Receive-Job -Job $ShareZipJob -Wait -AutoRemoveJob | ForEach-Object { Write-Host $_ }
+    $ShareZip = Get-Item -LiteralPath (Join-Path $ScriptDir "maboy.zip") -ErrorAction SilentlyContinue
+    if ($ShareZip -and $ShareZip.LastWriteTime -lt $ShareZipStarted.AddSeconds(-5)) {
+        $ShareZip = $null
+    }
+    if (-not $ShareZip) {
+        Write-Error "Portable player zip failed"
+        exit 1
+    }
+    Write-Host "[OK] Portable player zip: $($ShareZip.FullName)" -ForegroundColor Green
+}
 
 Write-Host "`n=========================================" -ForegroundColor Cyan
 Write-Host " Build Finished Successfully!           " -ForegroundColor Cyan

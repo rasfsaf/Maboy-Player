@@ -2,6 +2,7 @@
 
 #include <dwmapi.h>
 #include <flutter_windows.h>
+#include <windowsx.h>
 
 #include "resource.h"
 
@@ -135,7 +136,10 @@ bool Win32Window::Create(const std::wstring& title,
   double scale_factor = dpi / 96.0;
 
   HWND window = CreateWindow(
-      window_class, title.c_str(), WS_OVERLAPPEDWINDOW,
+      // Keep native resize, snap, minimize and maximize behavior, but let
+      // Flutter draw the top controls instead of a Windows caption.
+      window_class, title.c_str(),
+      WS_POPUP | WS_THICKFRAME | WS_MINIMIZEBOX | WS_MAXIMIZEBOX | WS_SYSMENU,
       Scale(origin.x, scale_factor), Scale(origin.y, scale_factor),
       Scale(size.width, scale_factor), Scale(size.height, scale_factor),
       nullptr, nullptr, GetModuleHandle(nullptr), this);
@@ -143,6 +147,9 @@ bool Win32Window::Create(const std::wstring& title,
   if (!window) {
     return false;
   }
+
+  MARGINS margins = {0, 0, 1, 0};
+  DwmExtendFrameIntoClientArea(window, &margins);
 
   UpdateTheme(window);
 
@@ -179,6 +186,84 @@ Win32Window::MessageHandler(HWND hwnd,
                             WPARAM const wparam,
                             LPARAM const lparam) noexcept {
   switch (message) {
+    case WM_NCCALCSIZE:
+      // The entire window is client area; no standard title bar or border.
+      if (wparam) {
+        if (IsZoomed(hwnd)) {
+          // Adjust client rect for maximized window so borders don't overflow the screen.
+          auto* params = reinterpret_cast<NCCALCSIZE_PARAMS*>(lparam);
+          MONITORINFO monitor_info{sizeof(MONITORINFO)};
+          HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+          if (GetMonitorInfo(monitor, &monitor_info)) {
+            params->rgrc[0] = monitor_info.rcWork;
+          }
+        }
+        return 0;
+      }
+      break;
+
+    case WM_NCHITTEST: {
+      if (IsZoomed(hwnd)) {
+        return HTCLIENT;
+      }
+      RECT bounds;
+      if (!GetWindowRect(hwnd, &bounds)) {
+        break;
+      }
+      const int edge = MulDiv(8, GetDpiForWindow(hwnd), 96);
+      const int x = GET_X_LPARAM(lparam);
+      const int y = GET_Y_LPARAM(lparam);
+
+      // Window controls in top-right corner (minimize, maximize, close: 138px wide, 36px high).
+      // Never treat this region as HTTOP or HTRIGHT so that hover & click always reach Flutter.
+      const int buttons_width = MulDiv(138, GetDpiForWindow(hwnd), 96);
+      const int titlebar_height = MulDiv(36, GetDpiForWindow(hwnd), 96);
+      if (x >= bounds.right - buttons_width && y <= bounds.top + titlebar_height) {
+        return HTCLIENT;
+      }
+
+      const bool left = x < bounds.left + edge;
+      const bool right = x >= bounds.right - edge;
+      const bool top = y < bounds.top + edge;
+      const bool bottom = y >= bounds.bottom - edge;
+      if (top && left) return HTTOPLEFT;
+      if (top && right) return HTTOPRIGHT;
+      if (bottom && left) return HTBOTTOMLEFT;
+      if (bottom && right) return HTBOTTOMRIGHT;
+      if (left) return HTLEFT;
+      if (right) return HTRIGHT;
+      if (top) return HTTOP;
+      if (bottom) return HTBOTTOM;
+      return HTCLIENT;
+    }
+
+    case WM_NCACTIVATE:
+      // Prevent Windows from repainting the non-client title bar when focus changes.
+      return DefWindowProc(hwnd, message, wparam, -1);
+
+    case WM_ERASEBKGND:
+      return 1;
+
+    case WM_GETMINMAXINFO: {
+      // A popup window otherwise maximizes over the taskbar. Work-area bounds
+      // also account for monitors positioned left or above the primary one.
+      MONITORINFO monitor_info{sizeof(MONITORINFO)};
+      HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+      if (GetMonitorInfo(monitor, &monitor_info)) {
+        auto* limits = reinterpret_cast<MINMAXINFO*>(lparam);
+        limits->ptMaxPosition.x =
+            monitor_info.rcWork.left - monitor_info.rcMonitor.left;
+        limits->ptMaxPosition.y =
+            monitor_info.rcWork.top - monitor_info.rcMonitor.top;
+        limits->ptMaxSize.x =
+            monitor_info.rcWork.right - monitor_info.rcWork.left;
+        limits->ptMaxSize.y =
+            monitor_info.rcWork.bottom - monitor_info.rcWork.top;
+        return 0;
+      }
+      break;
+    }
+
     case WM_DESTROY:
       window_handle_ = nullptr;
       Destroy();
@@ -218,7 +303,7 @@ Win32Window::MessageHandler(HWND hwnd,
       return 0;
   }
 
-  return DefWindowProc(window_handle_, message, wparam, lparam);
+  return DefWindowProc(hwnd, message, wparam, lparam);
 }
 
 void Win32Window::Destroy() {

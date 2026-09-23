@@ -7,12 +7,13 @@ import 'package:maboy/src/design_system.dart';
 import 'package:maboy/src/services/local_metadata_service.dart';
 import 'package:maboy/src/services/youtube_downloader.dart';
 import 'package:maboy/src/widgets/player_sheet.dart';
+import 'package:maboy/src/widgets/track_tile.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   SharedPreferences.setMockInitialValues({});
 
-  testWidgets('Ocean theme keeps the Maboy brand bold and blue', (
+  testWidgets('Maboy theme keeps the brand bold and the coral accent', (
     tester,
   ) async {
     await tester.pumpWidget(
@@ -94,6 +95,25 @@ void main() {
     );
     expect(YouTubeDownloadService.extractVideoId('dQw4w9WgXcQ'), 'dQw4w9WgXcQ');
     expect(YouTubeDownloadService.extractVideoId('https://google.com'), isNull);
+  });
+
+  test('yt-dlp rotated cookies error is actionable', () {
+    final result = YouTubeDownloadService.classifyYtDlpError(
+      'The provided YouTube account cookies are no longer valid. '
+      'They have likely been rotated in the browser.',
+    );
+
+    expect(result.isSuccess, isFalse);
+    expect(result.errorMessage, contains('cookies.txt устарел'));
+  });
+
+  test('yt-dlp age restriction explains required authentication', () {
+    final result = YouTubeDownloadService.classifyYtDlpError(
+      'Sign in to confirm your age. This video may be inappropriate.',
+    );
+
+    expect(result.isAgeRestricted, isTrue);
+    expect(result.errorMessage, contains('Видео 18+'));
   });
 
   test('LocalMetadataService extracts title fallback correctly', () {
@@ -200,7 +220,7 @@ void main() {
 
     expect(find.text('Далее в очереди'), findsOneWidget);
     expect(find.text('Сейчас играет'), findsOneWidget);
-    expect(find.byIcon(Icons.drag_handle), findsNWidgets(2));
+    expect(find.byIcon(Icons.drag_handle), findsNothing);
   });
 
   test('track.device_status mutation records remote device status', () {
@@ -216,5 +236,91 @@ void main() {
       controller.deviceTrackStatuses['track-abc']?['device_name'],
       'Android',
     );
+  });
+
+  test('track order survives metadata updates and keeps new tracks', () {
+    final controller = AppController();
+    addTearDown(controller.dispose);
+    controller.tracks.addAll([
+      {'id': 'a', 'title': 'A'},
+      {'id': 'b', 'title': 'B'},
+      {'id': 'c', 'title': 'C'},
+    ]);
+    controller.apply('track.set_order', {
+      'track_ids': ['b', 'a'],
+    });
+    expect(controller.tracks.map((track) => track['id']), ['b', 'a', 'c']);
+    controller.apply('track.upsert', {'id': 'a', 'title': 'Updated'});
+    expect(controller.tracks.map((track) => track['id']), ['b', 'a', 'c']);
+  });
+
+  testWidgets('actions tap opens menu and drag reorders without scrolling', (
+    tester,
+  ) async {
+    final controller = AppController();
+    addTearDown(controller.dispose);
+    final listScrollController = ScrollController();
+    addTearDown(listScrollController.dispose);
+    final tracks = List.generate(
+      10,
+      (index) => {'id': '$index', 'title': 'Track $index', 'artist': 'Artist'},
+    );
+    var dragStarted = false;
+    int? movedFrom;
+    int? movedTo;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: ReorderableListView.builder(
+            scrollController: listScrollController,
+            buildDefaultDragHandles: false,
+            itemCount: tracks.length,
+            onReorderStart: (_) => dragStarted = true,
+            onReorder: (from, to) {
+              movedFrom = from;
+              movedTo = to;
+            },
+            itemBuilder: (context, index) => TrackTile(
+              key: ValueKey(tracks[index]['id']),
+              controller: controller,
+              track: tracks[index],
+              dragIndex: index,
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final actions = find.byIcon(Icons.more_vert).first;
+    await tester.tap(actions);
+    await tester.pumpAndSettle();
+    expect(find.text('Играть следующим'), findsOneWidget);
+    await tester.tapAt(const Offset(4, 4));
+    await tester.pumpAndSettle();
+    expect(dragStarted, isFalse);
+
+    final gesture = await tester.startGesture(tester.getCenter(actions));
+    for (var step = 0; step < 8; step++) {
+      await gesture.moveBy(const Offset(0, 20));
+      await tester.pump(const Duration(milliseconds: 50));
+    }
+    expect(dragStarted, isTrue);
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(movedFrom, 0);
+    expect(movedTo, greaterThan(0));
+    expect(listScrollController.offset, 0);
+  });
+
+  test('playTrack returns false when track is deleted locally', () async {
+    final controller = AppController();
+    controller.deletedLocallyIds.add('deleted-1');
+    final played = await controller.playTrack({
+      'id': 'deleted-1',
+      'title': 'Deleted Track',
+      'provider': 'local',
+      'source_id': 's1',
+    });
+    expect(played, isFalse);
   });
 }

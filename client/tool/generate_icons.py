@@ -1,4 +1,4 @@
-"""Generate Windows and Android icons from the Ocean Maboy master artwork."""
+"""Generate the transparent Maboy m> mark for Windows and Android."""
 
 from __future__ import annotations
 
@@ -6,23 +6,29 @@ import os
 import time
 from io import BytesIO
 from pathlib import Path
-from typing import List, Tuple
-from PIL import Image, ImageDraw, ImageFilter, ImageOps
+
+from PIL import Image, ImageDraw
 
 
-def save_png_atomic(image: Image.Image, output_path: Path) -> None:
-    """Replace a PNG safely even when Windows briefly scans the old file.
+MASTER_SIZE = 1024
+SUPERSAMPLE = 2
+MARK_COLOR = (165, 170, 178, 255)
+OUTLINE_COLOR = (28, 30, 35, 255)
+ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
+ANDROID_DENSITIES = (
+    ("mipmap-mdpi", 48, 108),
+    ("mipmap-hdpi", 72, 162),
+    ("mipmap-xhdpi", 96, 216),
+    ("mipmap-xxhdpi", 144, 324),
+    ("mipmap-xxxhdpi", 192, 432),
+)
 
-    Android resource folders are watched by Gradle, Explorer, and antivirus
-    software. Writing through a sibling temporary file prevents a partially
-    truncated mipmap; short retries cover transient Windows sharing locks.
-    """
+
+def replace_bytes_atomic(data: bytes, output_path: Path) -> None:
+    """Avoid partially written launcher resources while Gradle watches them."""
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    buffer = BytesIO()
-    image.save(buffer, format="PNG")
     temporary_path = output_path.with_name(f".{output_path.name}.{os.getpid()}.tmp")
-    temporary_path.write_bytes(buffer.getvalue())
-
+    temporary_path.write_bytes(data)
     for attempt in range(5):
         try:
             os.replace(temporary_path, output_path)
@@ -34,224 +40,160 @@ def save_png_atomic(image: Image.Image, output_path: Path) -> None:
             time.sleep(0.2 * (attempt + 1))
 
 
-def extract_centered_disc(
-    source_image: Image.Image,
-    center_x: int = 831,
-    center_y: int = 416,
-    disc_radius: int = 385,
-) -> Image.Image:
-    """Crop the circular glowing disc centered around (center_x, center_y).
+def save_image(image: Image.Image, path: Path, image_format: str = "PNG", **options: object) -> None:
+    buffer = BytesIO()
+    image.save(buffer, format=image_format, **options)
+    replace_bytes_atomic(buffer.getvalue(), path)
 
-    Masks out the bottom text label ('MABOY') with deep black.
+
+def cubic_points(
+    start: tuple[int, int],
+    control_a: tuple[int, int],
+    control_b: tuple[int, int],
+    end: tuple[int, int],
+    steps: int = 40,
+) -> list[tuple[int, int]]:
+    points: list[tuple[int, int]] = []
+    for step in range(steps + 1):
+        t = step / steps
+        reverse = 1 - t
+        x = (
+            reverse**3 * start[0]
+            + 3 * reverse**2 * t * control_a[0]
+            + 3 * reverse * t**2 * control_b[0]
+            + t**3 * end[0]
+        )
+        y = (
+            reverse**3 * start[1]
+            + 3 * reverse**2 * t * control_a[1]
+            + 3 * reverse * t**2 * control_b[1]
+            + t**3 * end[1]
+        )
+        points.append((round(x * SUPERSAMPLE), round(y * SUPERSAMPLE)))
+    return points
+
+
+def draw_rounded_stroke(
+    draw: ImageDraw.ImageDraw,
+    points: list[tuple[int, int]],
+    width: int,
+    color: tuple[int, int, int, int],
+) -> None:
+    scaled_width = width * SUPERSAMPLE
+    draw.line(points, fill=color, width=scaled_width, joint="curve")
+    radius = scaled_width // 2
+    for x, y in (points[0], points[-1]):
+        draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=color)
+
+
+def create_mark() -> Image.Image:
+    """Draw only m> strokes; alpha remains zero outside the letterform.
+
+    The dark edge keeps the light mark legible on both dark taskbars and light
+    launchers. Bezier arches stay in the Android adaptive icon safe zone.
     """
-    diameter: int = disc_radius * 2
-    square_crop: Image.Image = Image.new("RGB", (diameter, diameter), (0, 0, 0))
-
-    src_x1: int = center_x - disc_radius
-    src_y1: int = center_y - disc_radius
-    src_x2: int = center_x + disc_radius
-    src_y2: int = center_y + disc_radius
-
-    # Clamp coordinates to image dimensions
-    clamp_x1: int = max(0, src_x1)
-    clamp_y1: int = max(0, src_y1)
-    clamp_x2: int = min(source_image.width, src_x2)
-    clamp_y2: int = min(source_image.height, src_y2)
-
-    dest_x1: int = clamp_x1 - src_x1
-    dest_y1: int = clamp_y1 - src_y1
-
-    region: Image.Image = source_image.crop((clamp_x1, clamp_y1, clamp_x2, clamp_y2))
-    square_crop.paste(region, (dest_x1, dest_y1))
-
-    # Mask out the text area if within crop bounds:
-    # Text is between Y=819 and Y=832 in source coordinates
-    text_src_y_start: int = 810
-    text_src_y_end: int = 845
-    if src_y1 <= text_src_y_end and src_y2 >= text_src_y_start:
-        mask_y1: int = max(0, text_src_y_start - src_y1)
-        mask_y2: int = min(diameter, text_src_y_end - src_y1)
-        draw = ImageDraw.Draw(square_crop)
-        draw.rectangle([0, mask_y1, diameter, mask_y2], fill=(0, 0, 0))
-
-    return square_crop
-
-
-def create_master_icon(
-    disc_crop: Image.Image,
-    target_canvas_size: int = 1024,
-    content_scale: float = 0.84,
-) -> Image.Image:
-    """Create a high-res square master icon with comfortable padding for desktop/legacy icons."""
-    target_disc_size: int = int(round(target_canvas_size * content_scale))
-    resized_disc: Image.Image = disc_crop.resize(
-        (target_disc_size, target_disc_size), Image.Resampling.LANCZOS
+    canvas = Image.new(
+        "RGBA", (MASTER_SIZE * SUPERSAMPLE, MASTER_SIZE * SUPERSAMPLE), (0, 0, 0, 0)
     )
-
-    canvas: Image.Image = Image.new("RGBA", (target_canvas_size, target_canvas_size), (0, 0, 0, 255))
-    offset: int = (target_canvas_size - target_disc_size) // 2
-    canvas.paste(resized_disc, (offset, offset))
-    return canvas
-
-
-def create_adaptive_foreground(
-    disc_crop: Image.Image,
-    target_canvas_size: int = 1024,
-    safe_zone_scale: float = 0.66,
-) -> Image.Image:
-    """Create the Android adaptive icon foreground layer fitting inside the 66-70% safe zone.
-
-    The Android adaptive icon canvas is 108x108 dp, with the safe circle viewport being 72x72 dp (66.6%).
-    """
-    target_disc_size: int = int(round(target_canvas_size * safe_zone_scale))
-    resized_disc: Image.Image = disc_crop.resize(
-        (target_disc_size, target_disc_size), Image.Resampling.LANCZOS
-    )
-
-    # Transparent canvas with centered glowing disc
-    canvas: Image.Image = Image.new("RGBA", (target_canvas_size, target_canvas_size), (0, 0, 0, 0))
-    offset: int = (target_canvas_size - target_disc_size) // 2
-    canvas.paste(resized_disc, (offset, offset))
-    return canvas
+    draw = ImageDraw.Draw(canvas)
+    first_arch = cubic_points((142, 445), (142, 310), (366, 310), (366, 445))
+    second_arch = cubic_points((366, 445), (366, 310), (590, 310), (590, 445))
+    letter_m = [
+        (142 * SUPERSAMPLE, 686 * SUPERSAMPLE),
+        *first_arch,
+        (366 * SUPERSAMPLE, 686 * SUPERSAMPLE),
+    ]
+    second_hump = [*second_arch, (590 * SUPERSAMPLE, 686 * SUPERSAMPLE)]
+    chevron = [
+        (665 * SUPERSAMPLE, 375 * SUPERSAMPLE),
+        (855 * SUPERSAMPLE, 520 * SUPERSAMPLE),
+        (665 * SUPERSAMPLE, 665 * SUPERSAMPLE),
+    ]
+    for color, width in ((OUTLINE_COLOR, 100), (MARK_COLOR, 78)):
+        for points in (letter_m, second_hump, chevron):
+            draw_rounded_stroke(draw, points, width, color)
+    return canvas.resize((MASTER_SIZE, MASTER_SIZE), Image.Resampling.LANCZOS)
 
 
-def generate_windows_ico(master_icon: Image.Image, output_path: Path) -> None:
-    """Generate a multi-resolution Windows .ico file with all standard layer sizes."""
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    sizes: List[int] = [16, 24, 32, 48, 64, 128, 256]
-    images: List[Image.Image] = []
-
-    for sz in sizes:
-        resized: Image.Image = master_icon.resize((sz, sz), Image.Resampling.LANCZOS)
-        # Apply subtle unsharp mask to crisp up small icon resolutions
-        if sz <= 32:
-            resized = resized.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=3))
-        images.append(resized)
-
-    # Save as ICO with all embedded sizes using standard Windows BMP/DIB bitmaps
-    # so Windows Explorer (explorer.exe) can natively extract and display the icon in all views.
-    images[-1].save(
-        output_path,
-        format="ICO",
-        sizes=[(s, s) for s in sizes],
-        bitmap_format="bmp",
-    )
+def create_adaptive_foreground(master: Image.Image) -> Image.Image:
+    # The mark occupies about 79% of the master. At 82% scale it fits the
+    # Android adaptive icon's central 66% safe region, including the stroke.
+    content_size = round(MASTER_SIZE * 0.82)
+    content = master.resize((content_size, content_size), Image.Resampling.LANCZOS)
+    foreground = Image.new("RGBA", (MASTER_SIZE, MASTER_SIZE), (0, 0, 0, 0))
+    offset = (MASTER_SIZE - content_size) // 2
+    foreground.alpha_composite(content, (offset, offset))
+    return foreground
 
 
 def generate_android_resources(
-    master_icon: Image.Image,
-    adaptive_foreground: Image.Image,
+    master: Image.Image,
+    foreground: Image.Image,
+    monochrome_foreground: Image.Image,
     res_dir: Path,
 ) -> None:
-    """Generate all legacy and adaptive mipmap icon densities for Android."""
-    # Standard mipmap density scale: mdpi=1x (48px), hdpi=1.5x (72px), xhdpi=2x (96px),
-    # xxhdpi=3x (144px), xxxhdpi=4x (192px)
-    densities: List[Tuple[str, int, int]] = [
-        ("mipmap-mdpi", 48, 108),
-        ("mipmap-hdpi", 72, 162),
-        ("mipmap-xhdpi", 96, 216),
-        ("mipmap-xxhdpi", 144, 324),
-        ("mipmap-xxxhdpi", 192, 432),
-    ]
-
-    for folder_name, legacy_size, adaptive_size in densities:
-        folder_path: Path = res_dir / folder_name
-        folder_path.mkdir(parents=True, exist_ok=True)
-
-        # 1. Legacy ic_launcher.png
-        legacy_icon: Image.Image = master_icon.resize(
-            (legacy_size, legacy_size), Image.Resampling.LANCZOS
-        )
-        if legacy_size <= 48:
-            legacy_icon = legacy_icon.filter(ImageFilter.UnsharpMask(radius=1, percent=120, threshold=3))
-        save_png_atomic(legacy_icon.convert("RGBA"), folder_path / "ic_launcher.png")
-
-        # 2. Legacy ic_launcher_round.png
-        # Create circular masked version for launchers that use round icons
-        round_mask: Image.Image = Image.new("L", (legacy_size, legacy_size), 0)
-        draw = ImageDraw.Draw(round_mask)
-        draw.ellipse((0, 0, legacy_size - 1, legacy_size - 1), fill=255)
-        round_icon: Image.Image = Image.new("RGBA", (legacy_size, legacy_size), (0, 0, 0, 0))
-        round_icon.paste(legacy_icon, (0, 0), round_mask)
-        save_png_atomic(round_icon, folder_path / "ic_launcher_round.png")
-
-        # 3. Adaptive ic_launcher_foreground.png
-        fg_icon: Image.Image = adaptive_foreground.resize(
+    for folder_name, legacy_size, adaptive_size in ANDROID_DENSITIES:
+        folder = res_dir / folder_name
+        legacy = master.resize((legacy_size, legacy_size), Image.Resampling.LANCZOS)
+        adaptive = foreground.resize(
             (adaptive_size, adaptive_size), Image.Resampling.LANCZOS
         )
-        save_png_atomic(fg_icon, folder_path / "ic_launcher_foreground.png")
+        themed = monochrome_foreground.resize(
+            (adaptive_size, adaptive_size), Image.Resampling.LANCZOS
+        )
+        save_image(legacy, folder / "ic_launcher.png")
+        save_image(legacy, folder / "ic_launcher_round.png")
+        save_image(adaptive, folder / "ic_launcher_foreground.png")
+        save_image(themed, folder / "ic_launcher_monochrome.png")
 
-    # 4. XML for adaptive icons in mipmap-anydpi-v26
-    anydpi_dir: Path = res_dir / "mipmap-anydpi-v26"
-    anydpi_dir.mkdir(parents=True, exist_ok=True)
-
-    adaptive_xml_content = (
+    xml = (
         '<?xml version="1.0" encoding="utf-8"?>\n'
         '<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n'
         '    <background android:drawable="@color/ic_launcher_background"/>\n'
         '    <foreground android:drawable="@mipmap/ic_launcher_foreground"/>\n'
+        '    <monochrome android:drawable="@mipmap/ic_launcher_monochrome"/>\n'
         '</adaptive-icon>\n'
     )
-    (anydpi_dir / "ic_launcher.xml").write_text(adaptive_xml_content, encoding="utf-8")
-    (anydpi_dir / "ic_launcher_round.xml").write_text(adaptive_xml_content, encoding="utf-8")
+    anydpi = res_dir / "mipmap-anydpi-v26"
+    anydpi.mkdir(parents=True, exist_ok=True)
+    (anydpi / "ic_launcher.xml").write_text(xml, encoding="utf-8")
+    (anydpi / "ic_launcher_round.xml").write_text(xml, encoding="utf-8")
 
-    # 5. Ocean navy fills the area exposed by Android launcher masks.
-    values_dir: Path = res_dir / "values"
-    values_dir.mkdir(parents=True, exist_ok=True)
-    colors_file: Path = values_dir / "colors.xml"
-
-    colors_xml_content = (
+    colors = (
         '<?xml version="1.0" encoding="utf-8"?>\n'
         '<resources>\n'
-        '    <color name="ic_launcher_background">#10151D</color>\n'
+        '    <color name="ic_launcher_background">#00000000</color>\n'
         '</resources>\n'
     )
-    colors_file.write_text(colors_xml_content, encoding="utf-8")
+    values = res_dir / "values"
+    values.mkdir(parents=True, exist_ok=True)
+    (values / "colors.xml").write_text(colors, encoding="utf-8")
 
 
 def main() -> None:
-    root_dir: Path = Path(__file__).resolve().parent.parent.parent
-    source_image_path: Path = (
-        root_dir / "client" / "assets" / "icon" / "app_icon_source_ocean.png"
+    client = Path(__file__).resolve().parent.parent
+    assets = client / "assets" / "icon"
+    master = create_mark()
+    foreground = create_adaptive_foreground(master)
+    monochrome = Image.new("RGBA", master.size, (255, 255, 255, 0))
+    monochrome.putalpha(master.getchannel("A"))
+    monochrome_foreground = create_adaptive_foreground(monochrome)
+    save_image(master, assets / "app_icon.png")
+    save_image(foreground, assets / "app_icon_adaptive.png")
+    save_image(monochrome_foreground, assets / "app_icon_monochrome.png")
+    save_image(
+        master,
+        client / "windows" / "runner" / "resources" / "app_icon.ico",
+        image_format="ICO",
+        sizes=[(size, size) for size in ICON_SIZES],
     )
-
-    if not source_image_path.exists():
-        raise FileNotFoundError(f"Source artwork not found at {source_image_path}")
-
-    print(f"Loading source artwork from {source_image_path}...")
-    source_img: Image.Image = Image.open(source_image_path).convert("RGBA")
-    master_source: Image.Image = ImageOps.fit(
-        source_img,
-        (1024, 1024),
-        method=Image.Resampling.LANCZOS,
-        centering=(0.5, 0.5),
+    generate_android_resources(
+        master,
+        foreground,
+        monochrome_foreground,
+        client / "android" / "app" / "src" / "main" / "res",
     )
-
-    # Master icons
-    assets_dir: Path = root_dir / "client" / "assets" / "icon"
-    assets_dir.mkdir(parents=True, exist_ok=True)
-
-    master_icon: Image.Image = master_source
-    save_png_atomic(master_icon, assets_dir / "app_icon.png")
-    print(f"Generated {assets_dir / 'app_icon.png'}")
-
-    adaptive_fg: Image.Image = create_adaptive_foreground(
-        master_source, 1024, safe_zone_scale=0.70
-    )
-    save_png_atomic(adaptive_fg, assets_dir / "app_icon_adaptive.png")
-    print(f"Generated {assets_dir / 'app_icon_adaptive.png'}")
-
-    # Windows .ico
-    windows_ico_path: Path = root_dir / "client" / "windows" / "runner" / "resources" / "app_icon.ico"
-    generate_windows_ico(master_icon, windows_ico_path)
-    print(f"Generated Windows icon {windows_ico_path}")
-
-    # Android mipmaps
-    res_dir: Path = root_dir / "client" / "android" / "app" / "src" / "main" / "res"
-    generate_android_resources(master_icon, adaptive_fg, res_dir)
-    print(f"Generated Android mipmaps and adaptive icons in {res_dir}")
-
-    print("Icon generation completed successfully.")
+    print("Generated transparent m> icons for Windows and Android.")
 
 
 if __name__ == "__main__":

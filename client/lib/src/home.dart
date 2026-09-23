@@ -1,5 +1,7 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import 'api.dart';
 import 'app_controller.dart';
 import 'design_system.dart';
 import 'pages/equalizer_page.dart';
@@ -253,7 +255,7 @@ class _HomePageState extends State<HomePage> {
                           Padding(
                             padding: const EdgeInsets.only(top: 12),
                             child: Text(
-                              c.error!,
+                              friendlyErrorMessage(c.error!),
                               style: const TextStyle(
                                 color: MaboyColors.warning,
                               ),
@@ -359,7 +361,7 @@ class _HomePageState extends State<HomePage> {
                       } else if (action == 'scan') {
                         c.scanAndImportDeviceMusic(manual: true);
                       } else if (action == 'sync') {
-                        c.sync();
+                        c.transferNow();
                       } else if (action == 'transfer') {
                         c.transferNow();
                       } else if (action == 'logout') {
@@ -460,202 +462,229 @@ class _HomePageState extends State<HomePage> {
           child: Row(
             children: [
               if (isDesktop)
-                NavigationRail(
-                  backgroundColor: MaboyColors.surface.withValues(alpha: 0.92),
-                  selectedIndex: page,
-                  groupAlignment: -0.72,
-                  labelType: NavigationRailLabelType.all,
-                  onDestinationSelected: (value) {
+                _DesktopSideNav(
+                  controller: c,
+                  selectedPage: page,
+                  onSelect: (value) {
                     _clearSelection();
                     setState(() => page = value);
                   },
-                  leading: Padding(
-                    padding: const EdgeInsets.only(top: 12, bottom: 28),
-                    child: Text(
-                      'PLAY / MUSIC',
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: MaboyColors.textMuted,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 1.5,
-                      ),
-                    ),
-                  ),
-                  destinations: const [
-                    NavigationRailDestination(
-                      icon: Icon(Icons.library_music_outlined),
-                      selectedIcon: Icon(Icons.library_music),
-                      label: Text('Библиотека'),
-                    ),
-                    NavigationRailDestination(
-                      icon: Icon(Icons.album_outlined),
-                      selectedIcon: Icon(Icons.album),
-                      label: Text('Плейлисты'),
-                    ),
-                    NavigationRailDestination(
-                      icon: Icon(Icons.queue_music_outlined),
-                      selectedIcon: Icon(Icons.queue_music),
-                      label: Text('Очередь'),
-                    ),
-                  ],
+                  onAddPlaylist: addPlaylist,
                 ),
               Expanded(
                 child: Column(
                   children: [
-                    if (c.error != null)
-                      MaterialBanner(
-                        content: Text(c.error!),
-                        actions: [
-                          TextButton(
-                            onPressed: c.sync,
-                            child: const Text('Повторить'),
-                          ),
-                        ],
-                      ),
-                    if (c.pending.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.all(8),
-                        child: Text('Ожидают отправки: ${c.pending.length}'),
-                      ),
-                    if (c.transferStatus.isNotEmpty)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 12,
-                          vertical: 4,
-                        ),
-                        child: Text(
-                          c.transferStatus,
-                          style: const TextStyle(
-                            color: MaboyColors.textMuted,
-                            fontSize: 13,
-                          ),
-                        ),
-                      ),
+                    // Все условные виджеты обёрнуты в AnimatedSize, чтобы их
+                    // появление/исчезновение не прыгало — плавное изменение высоты
+                    // не заставляет Expanded+CustomScrollView пересчитывать layout резко.
+                    AnimatedSize(
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeOut,
+                      alignment: Alignment.topCenter,
+                      child: c.error != null
+                          ? MaterialBanner(
+                              content: Text(friendlyErrorMessage(c.error!)),
+                              actions: [
+                                TextButton(
+                                  onPressed: c.sync,
+                                  child: const Text('Повторить'),
+                                ),
+                              ],
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                    AnimatedSize(
+                      duration: const Duration(milliseconds: 200),
+                      curve: Curves.easeOut,
+                      alignment: Alignment.topCenter,
+                      child: c.pending.isNotEmpty
+                          ? Padding(
+                              padding: const EdgeInsets.all(8),
+                              child: Text(
+                                'Ожидают отправки: ${c.pending.length}',
+                              ),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
+                    AnimatedSize(
+                      duration: const Duration(milliseconds: 180),
+                      curve: Curves.easeOut,
+                      alignment: Alignment.topCenter,
+                      // Ключевой фикс: длинный transferStatus (название трека)
+                      // плавно раздвигает список вместо резкого скачка вниз.
+                      child: c.transferStatus.isNotEmpty
+                          ? Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 4,
+                              ),
+                              child: Text(
+                                c.transferStatus,
+                                style: const TextStyle(
+                                  color: MaboyColors.textMuted,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            )
+                          : const SizedBox.shrink(),
+                    ),
                     Expanded(
                       child: [
                         // PAGE 0: LIBRARY
-                        Column(
-                          children: [
-                            Padding(
-                              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-                              child: Row(
-                                children: [
-                                  Expanded(
-                                    child: _QuickActionCard(
-                                      icon: Icons.create_new_folder_outlined,
-                                      label: 'Папка',
-                                      onTap: () => c.importMusic(folder: true),
+                        CustomScrollView(
+                          slivers: [
+                            SliverToBoxAdapter(
+                              child: Padding(
+                                padding: const EdgeInsets.fromLTRB(
+                                  16,
+                                  8,
+                                  16,
+                                  12,
+                                ),
+                                child: Row(
+                                  children: [
+                                    Expanded(
+                                      child: _QuickActionCard(
+                                        icon: Icons.create_new_folder_outlined,
+                                        label: 'Папка',
+                                        onTap: () =>
+                                            c.importMusic(folder: true),
+                                      ),
                                     ),
-                                  ),
-                                  const SizedBox(width: 10),
-                                  Expanded(
-                                    child: _QuickActionCard(
-                                      icon: Icons.audio_file_outlined,
-                                      label: 'Аудиофайлы',
-                                      onTap: c.importMusic,
-                                    ),
-                                  ),
-                                  if (c.tracks.isNotEmpty) ...[
                                     const SizedBox(width: 10),
                                     Expanded(
                                       child: _QuickActionCard(
-                                        icon: Icons.shuffle,
-                                        label: 'Микс',
-                                        accent: true,
-                                        onTap: c.startShuffle,
+                                        icon: Icons.audio_file_outlined,
+                                        label: 'Аудиофайлы',
+                                        onTap: c.importMusic,
                                       ),
                                     ),
+                                    if (c.tracks.isNotEmpty) ...[
+                                      const SizedBox(width: 10),
+                                      Expanded(
+                                        child: _QuickActionCard(
+                                          icon: Icons.shuffle,
+                                          label: 'Микс',
+                                          accent: true,
+                                          onTap: c.startShuffle,
+                                        ),
+                                      ),
+                                    ],
                                   ],
-                                ],
+                                ),
                               ),
                             ),
                             if (c.tracks.isNotEmpty) ...[
                               if (c.recentlyPlayed.isNotEmpty)
-                                _TrackRail(
-                                  title: 'Недавно слушали',
-                                  tracks: c.recentlyPlayed,
-                                  controller: c,
+                                SliverToBoxAdapter(
+                                  child: _TrackRail(
+                                    title: 'Недавно слушали',
+                                    tracks: c.recentlyPlayed,
+                                    controller: c,
+                                    onSeeAll: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) =>
+                                              HistoryPage(controller: c),
+                                        ),
+                                      );
+                                    },
+                                  ),
                                 ),
                               if (c.favoriteIds.isNotEmpty)
-                                _TrackRail(
-                                  title: 'Избранное',
-                                  tracks: c.tracks
-                                      .where(
-                                        (track) => c.favoriteIds.contains(
-                                          '${track['id']}',
+                                SliverToBoxAdapter(
+                                  child: _TrackRail(
+                                    title: 'Избранное',
+                                    tracks: c.tracks
+                                        .where(
+                                          (track) => c.favoriteIds.contains(
+                                            '${track['id']}',
+                                          ),
+                                        )
+                                        .toList(),
+                                    controller: c,
+                                    onSeeAll: () {
+                                      Navigator.push(
+                                        context,
+                                        MaterialPageRoute(
+                                          builder: (_) =>
+                                              FavoritesPage(controller: c),
                                         ),
-                                      )
-                                      .take(12)
-                                      .toList(),
-                                  controller: c,
+                                      );
+                                    },
+                                  ),
                                 ),
                             ],
                             if (c.tracks.isNotEmpty)
-                              Padding(
-                                padding: const EdgeInsets.fromLTRB(
-                                  18,
-                                  4,
-                                  18,
-                                  8,
-                                ),
-                                child: Row(
-                                  children: [
-                                    Text(
-                                      'Все треки',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .titleMedium
-                                          ?.copyWith(
-                                            fontWeight: FontWeight.w800,
-                                          ),
-                                    ),
-                                    const Spacer(),
-                                    Text(
-                                      '${c.tracks.length}',
-                                      style: const TextStyle(
-                                        color: MaboyColors.textMuted,
+                              SliverToBoxAdapter(
+                                child: Padding(
+                                  padding: const EdgeInsets.fromLTRB(
+                                    18,
+                                    14,
+                                    18,
+                                    8,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Text(
+                                        'Все треки',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleMedium
+                                            ?.copyWith(
+                                              fontWeight: FontWeight.w800,
+                                            ),
                                       ),
-                                    ),
-                                  ],
+                                      const Spacer(),
+                                      Text(
+                                        '${c.tracks.length}',
+                                        style: const TextStyle(
+                                          color: MaboyColors.textMuted,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
                               ),
-                            Expanded(
-                              child: c.tracks.isEmpty
-                                  ? const Center(
-                                      child: Text(
-                                        'В библиотеке пока нет треков',
+                            if (c.tracks.isEmpty)
+                              const SliverFillRemaining(
+                                hasScrollBody: false,
+                                child: Center(
+                                  child: Text('В библиотеке пока нет треков'),
+                                ),
+                              )
+                            else
+                              SliverPadding(
+                                padding: const EdgeInsets.fromLTRB(8, 0, 8, 16),
+                                sliver: SliverReorderableList(
+                                  proxyDecorator: maboyReorderProxyDecorator,
+                                  itemCount: c.tracks.length,
+                                  onReorderStart: (_) => c.beginReorder(),
+                                  onReorderEnd: (_) => c.endReorder(),
+                                  onReorder: c.reorderTracks,
+                                  itemBuilder: (context, index) {
+                                    final track = c.tracks[index];
+                                    final id = track['id'] as String;
+                                    return TrackTile(
+                                      key: ValueKey(id),
+                                      controller: c,
+                                      track: track,
+                                      dragIndex: index,
+                                      isSelected: _selectedTrackIds.contains(
+                                        id,
                                       ),
-                                    )
-                                  : ReorderableListView.builder(
-                                      padding: const EdgeInsets.fromLTRB(
-                                        8,
-                                        0,
-                                        8,
-                                        10,
-                                      ),
-                                      buildDefaultDragHandles: !_isSelecting,
-                                      itemCount: c.tracks.length,
-                                      onReorder: c.reorderTracks,
-                                      itemBuilder: (context, index) {
-                                        final track = c.tracks[index];
-                                        final id = track['id'] as String;
-                                        return TrackTile(
-                                          key: ValueKey(id),
-                                          controller: c,
-                                          track: track,
-                                          dragIndex: index,
-                                          isSelected: _selectedTrackIds
-                                              .contains(id),
-                                          isSelecting: _isSelecting,
-                                          onSelect: () => _toggleSelect(id),
-                                          onLongPress: () {
-                                            if (!_isSelecting) {
-                                              _toggleSelect(id);
-                                            }
-                                          },
-                                        );
+                                      isSelecting: _isSelecting,
+                                      onSelect: () => _toggleSelect(id),
+                                      onLongPress: () {
+                                        if (!_isSelecting) {
+                                          _toggleSelect(id);
+                                        }
                                       },
-                                    ),
-                            ),
+                                    );
+                                  },
+                                ),
+                              ),
                           ],
                         ),
 
@@ -682,6 +711,7 @@ class _HomePageState extends State<HomePage> {
                                 ),
                               )
                             : ReorderableListView.builder(
+                                proxyDecorator: maboyReorderProxyDecorator,
                                 padding: const EdgeInsets.symmetric(
                                   horizontal: 10,
                                   vertical: 8,
@@ -787,6 +817,9 @@ class _HomePageState extends State<HomePage> {
                                       ),
                                     )
                                   : ReorderableListView(
+                                      proxyDecorator:
+                                          maboyReorderProxyDecorator,
+                                      buildDefaultDragHandles: false,
                                       onReorder: (from, to) {
                                         if (to > from) to--;
                                         final items =
@@ -796,7 +829,11 @@ class _HomePageState extends State<HomePage> {
                                         items.insert(to, items.removeAt(from));
                                         c.setQueue(items);
                                       },
-                                      children: c.queue.map((item) {
+                                      children: c.queue.asMap().entries.map((
+                                        entry,
+                                      ) {
+                                        final index = entry.key;
+                                        final item = entry.value;
                                         final track = c.tracks
                                             .where(
                                               (entry) =>
@@ -804,43 +841,39 @@ class _HomePageState extends State<HomePage> {
                                                   item['track_id'],
                                             )
                                             .firstOrNull;
-                                        return ListTile(
+                                        return ReorderableDelayedDragStartListener(
                                           key: ValueKey(item['id']),
-                                          contentPadding:
-                                              const EdgeInsets.symmetric(
-                                                horizontal: 12,
-                                              ),
-                                          leading: Row(
-                                            mainAxisSize: MainAxisSize.min,
-                                            children: [
-                                              const Icon(Icons.drag_handle),
-                                              const SizedBox(width: 8),
-                                              TrackCover(
-                                                controller: c,
-                                                track: track ?? const {},
-                                                size: 44,
-                                                radius: 6,
-                                              ),
-                                            ],
-                                          ),
-                                          title: MarqueeText(
-                                            '${track?['title'] ?? 'Трек'}',
-                                          ),
-                                          subtitle: Text(
-                                            '${track?['artist'] ?? ''}',
-                                            maxLines: 1,
-                                            overflow: TextOverflow.ellipsis,
-                                            style: const TextStyle(
-                                              color: MaboyColors.textMuted,
-                                              fontSize: 12,
+                                          index: index,
+                                          child: ListTile(
+                                            contentPadding:
+                                                const EdgeInsets.symmetric(
+                                                  horizontal: 12,
+                                                ),
+                                            leading: TrackCover(
+                                              controller: c,
+                                              track: track ?? const {},
+                                              size: 44,
+                                              radius: 6,
                                             ),
-                                          ),
-                                          onTap: () => c.playQueueItem(item),
-                                          trailing: IconButton(
-                                            icon: const Icon(Icons.close),
-                                            onPressed: () => c.setQueue(
-                                              c.queue.where(
-                                                (q) => q['id'] != item['id'],
+                                            title: MarqueeText(
+                                              '${track?['title'] ?? 'Трек'}',
+                                            ),
+                                            subtitle: Text(
+                                              '${track?['artist'] ?? ''}',
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                              style: const TextStyle(
+                                                color: MaboyColors.textMuted,
+                                                fontSize: 12,
+                                              ),
+                                            ),
+                                            onTap: () => c.playQueueItem(item),
+                                            trailing: IconButton(
+                                              icon: const Icon(Icons.close),
+                                              onPressed: () => c.setQueue(
+                                                c.queue.where(
+                                                  (q) => q['id'] != item['id'],
+                                                ),
                                               ),
                                             ),
                                           ),
@@ -852,10 +885,19 @@ class _HomePageState extends State<HomePage> {
                         ),
                       ][page],
                     ),
-                    if (c.playingTrack != null)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
-                        child: MiniPlayer(controller: c),
+                    // MiniPlayer тоже в AnimatedSize — чтобы список не прыгал
+                    // при начале/завершении воспроизведения.
+                    if (!isDesktop)
+                      AnimatedSize(
+                        duration: const Duration(milliseconds: 220),
+                        curve: Curves.easeOut,
+                        alignment: Alignment.bottomCenter,
+                        child: c.playingTrack != null
+                            ? Padding(
+                                padding: const EdgeInsets.fromLTRB(8, 4, 8, 8),
+                                child: MiniPlayer(controller: c),
+                              )
+                            : const SizedBox.shrink(),
                       ),
                   ],
                 ),
@@ -864,7 +906,7 @@ class _HomePageState extends State<HomePage> {
           ),
         ),
         bottomNavigationBar: isDesktop
-            ? null
+            ? (c.playingTrack == null ? null : MiniPlayer(controller: c))
             : NavigationBar(
                 selectedIndex: page,
                 onDestinationSelected: (value) {
@@ -894,78 +936,352 @@ class _HomePageState extends State<HomePage> {
   );
 }
 
-class _TrackRail extends StatelessWidget {
+/// The desktop library stays visible while the bottom player spans the window.
+class _DesktopSideNav extends StatelessWidget {
+  const _DesktopSideNav({
+    required this.controller,
+    required this.selectedPage,
+    required this.onSelect,
+    required this.onAddPlaylist,
+  });
+
+  final AppController controller;
+  final int selectedPage;
+  final ValueChanged<int> onSelect;
+  final VoidCallback onAddPlaylist;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    width: 222,
+    child: MaboyGlassPanel(
+      radius: 0,
+      opacity: 0.84,
+      padding: const EdgeInsets.fromLTRB(10, 20, 10, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(12, 0, 12, 18),
+            child: Text(
+              'ТВОЯ МУЗЫКА',
+              style: TextStyle(
+                color: MaboyColors.textMuted,
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1.5,
+              ),
+            ),
+          ),
+          _SideNavButton(
+            icon: Icons.library_music_outlined,
+            label: 'Библиотека',
+            selected: selectedPage == 0,
+            onTap: () => onSelect(0),
+          ),
+          _SideNavButton(
+            icon: Icons.album_outlined,
+            label: 'Плейлисты',
+            selected: selectedPage == 1,
+            onTap: () => onSelect(1),
+          ),
+          _SideNavButton(
+            icon: Icons.queue_music_outlined,
+            label: 'Очередь',
+            selected: selectedPage == 2,
+            onTap: () => onSelect(2),
+          ),
+          const Divider(height: 24),
+          Padding(
+            padding: const EdgeInsets.only(left: 12, right: 3, bottom: 7),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'ПЛЕЙЛИСТЫ',
+                    style: TextStyle(
+                      color: MaboyColors.textMuted,
+                      fontSize: 11,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.4,
+                    ),
+                  ),
+                ),
+                IconButton(
+                  visualDensity: VisualDensity.compact,
+                  tooltip: 'Новый плейлист',
+                  onPressed: onAddPlaylist,
+                  icon: const Icon(Icons.add, size: 19),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: ListView.builder(
+              itemCount: controller.playlists.length,
+              itemBuilder: (context, index) {
+                final playlist = controller.playlists[index];
+                return _SideNavButton(
+                  icon: Icons.music_note_outlined,
+                  label: '${playlist['name']}',
+                  onTap: () => Navigator.of(context).push(
+                    MaterialPageRoute(
+                      builder: (_) => PlaylistDetailPage(
+                        controller: controller,
+                        playlist: playlist,
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+          const Divider(height: 20),
+          _SideNavButton(
+            icon: Icons.search,
+            label: 'Поиск',
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => SearchPage(controller: controller),
+              ),
+            ),
+          ),
+          _SideNavButton(
+            icon: Icons.favorite_border,
+            label: 'Избранное',
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => FavoritesPage(controller: controller),
+              ),
+            ),
+          ),
+          _SideNavButton(
+            icon: Icons.history,
+            label: 'История',
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => HistoryPage(controller: controller),
+              ),
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class _SideNavButton extends StatelessWidget {
+  const _SideNavButton({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.selected = false,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  final bool selected;
+
+  @override
+  Widget build(BuildContext context) => Material(
+    color: selected
+        ? MaboyColors.primary.withValues(alpha: 0.15)
+        : Colors.transparent,
+    borderRadius: BorderRadius.circular(10),
+    child: InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(10),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 11),
+        child: Row(
+          children: [
+            Icon(
+              icon,
+              size: 20,
+              color: selected ? MaboyColors.primary : MaboyColors.textMuted,
+            ),
+            const SizedBox(width: 11),
+            Expanded(
+              child: Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+class _TrackRail extends StatefulWidget {
   const _TrackRail({
     required this.title,
     required this.tracks,
     required this.controller,
+    this.onSeeAll,
   });
 
   final String title;
   final List<Map<String, dynamic>> tracks;
   final AppController controller;
+  final VoidCallback? onSeeAll;
+
+  @override
+  State<_TrackRail> createState() => _TrackRailState();
+}
+
+class _TrackRailState extends State<_TrackRail> {
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  void _scrollBy(double delta) {
+    if (!_scrollController.hasClients) return;
+    final newOffset = (_scrollController.offset + delta).clamp(
+      0.0,
+      _scrollController.position.maxScrollExtent,
+    );
+    _scrollController.animateTo(
+      newOffset,
+      duration: const Duration(milliseconds: 260),
+      curve: Curves.easeOutCubic,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
-    if (tracks.isEmpty) return const SizedBox.shrink();
+    if (widget.tracks.isEmpty) return const SizedBox.shrink();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.fromLTRB(18, 16, 18, 8),
-          child: Text(
-            title,
-            style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
+          padding: const EdgeInsets.fromLTRB(18, 14, 10, 6),
+          child: Row(
+            children: [
+              Text(
+                widget.title,
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Text(
+                '${widget.tracks.length}',
+                style: const TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                  color: MaboyColors.textMuted,
+                ),
+              ),
+              const Spacer(),
+              if (widget.onSeeAll != null)
+                TextButton.icon(
+                  onPressed: widget.onSeeAll,
+                  iconAlignment: IconAlignment.end,
+                  icon: const Icon(Icons.arrow_forward_ios, size: 11),
+                  label: const Text('Все'),
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    foregroundColor: MaboyColors.primary,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                ),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                iconSize: 18,
+                icon: const Icon(Icons.arrow_back_ios_new),
+                tooltip: 'Назад',
+                onPressed: () => _scrollBy(-260),
+              ),
+              IconButton(
+                visualDensity: VisualDensity.compact,
+                iconSize: 18,
+                icon: const Icon(Icons.arrow_forward_ios),
+                tooltip: 'Вперед',
+                onPressed: () => _scrollBy(260),
+              ),
+            ],
           ),
         ),
         SizedBox(
-          height: 168,
-          child: ListView.separated(
-            scrollDirection: Axis.horizontal,
-            padding: const EdgeInsets.symmetric(horizontal: 18),
-            itemCount: tracks.length,
-            separatorBuilder: (_, _) => const SizedBox(width: 12),
-            itemBuilder: (context, index) {
-              final track = tracks[index];
-              final playing = controller.playingTrack?['id'] == track['id'];
-              return InkWell(
-                borderRadius: BorderRadius.circular(12),
-                onTap: () => controller.playTrack(track),
-                child: SizedBox(
-                  width: 118,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      TrackCover(
-                        controller: controller,
-                        track: track,
-                        size: 118,
-                        radius: 8,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        '${track['title']}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontWeight: FontWeight.w700,
-                          color: playing ? MaboyColors.primary : null,
-                        ),
-                      ),
-                      Text(
-                        '${track['artist'] ?? 'Неизвестный'}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: MaboyColors.textMuted,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
+          height: 172,
+          child: Listener(
+            onPointerSignal: (event) {
+              if (event is PointerScrollEvent) {
+                final double delta = event.scrollDelta.dy != 0
+                    ? event.scrollDelta.dy
+                    : event.scrollDelta.dx;
+                if (delta != 0 && _scrollController.hasClients) {
+                  final double newOffset = (_scrollController.offset + delta)
+                      .clamp(0.0, _scrollController.position.maxScrollExtent);
+                  _scrollController.jumpTo(newOffset);
+                }
+              }
             },
+            child: Scrollbar(
+              controller: _scrollController,
+              thumbVisibility: false,
+              child: ListView.separated(
+                controller: _scrollController,
+                physics: const BouncingScrollPhysics(),
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 18),
+                itemCount: widget.tracks.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 12),
+                itemBuilder: (context, index) {
+                  final track = widget.tracks[index];
+                  final playing =
+                      widget.controller.playingTrack?['id'] == track['id'];
+                  return InkWell(
+                    borderRadius: BorderRadius.circular(12),
+                    onTap: () => widget.controller.playTrack(track),
+                    child: SizedBox(
+                      width: 118,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          TrackCover(
+                            controller: widget.controller,
+                            track: track,
+                            size: 118,
+                            radius: 8,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            '${track['title']}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontWeight: FontWeight.w700,
+                              color: playing ? MaboyColors.primary : null,
+                            ),
+                          ),
+                          Text(
+                            '${track['artist'] ?? 'Неизвестный'}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: MaboyColors.textMuted,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
           ),
         ),
       ],
@@ -987,25 +1303,33 @@ class _QuickActionCard extends StatelessWidget {
   final bool accent;
 
   @override
-  Widget build(BuildContext context) => Material(
-    color: accent ? MaboyColors.primary : MaboyColors.surface,
-    borderRadius: BorderRadius.circular(6),
-    child: InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(6),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
-        child: Column(
-          children: [
-            Icon(icon, color: accent ? Colors.white : MaboyColors.secondary),
-            const SizedBox(height: 8),
-            Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
-            ),
-          ],
+  Widget build(BuildContext context) => MaboyGlassPanel(
+    radius: 14,
+    opacity: accent ? 0.88 : 0.66,
+    child: Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+          child: Column(
+            children: [
+              Icon(
+                icon,
+                color: accent ? MaboyColors.primary : MaboyColors.secondary,
+              ),
+              const SizedBox(height: 8),
+              Text(
+                label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     ),

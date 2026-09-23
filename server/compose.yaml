@@ -17,6 +17,12 @@ services:
     restart: unless-stopped
     environment:
       DATABASE_URL: postgresql+psycopg://maboy:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@db/maboy
+      YOUTUBE_COOKIES_FILE: /run/secrets/youtube_cookies.txt
+      YOUTUBE_CACHE_DIR: /var/lib/maboy/youtube
+      YOUTUBE_CACHE_MAX_BYTES: ${YOUTUBE_CACHE_MAX_BYTES:-21474836480}
+    volumes:
+      - youtube_cache:/var/lib/maboy/youtube
+      - ${YOUTUBE_COOKIES_HOST_PATH:-./secrets/youtube_cookies.txt}:/run/secrets/youtube_cookies.txt:ro
     ports:
       - "127.0.0.1:18181:8000"
     depends_on:
@@ -24,3 +30,4 @@ services:
         condition: service_healthy
 volumes:
   postgres_data:
+  youtube_cache:

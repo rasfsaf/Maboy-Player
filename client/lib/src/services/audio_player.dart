@@ -56,6 +56,7 @@ class MaboyAudioPlayer {
   ProcessingState _processingState = ProcessingState.idle;
   bool _equalizerEnabled = false;
   List<double> _equalizerGains = List<double>.filled(6, 0);
+  bool _unsolicitedPlayBlocked = false;
   bool _disposed = false;
 
   final _playingController = StreamController<bool>.broadcast();
@@ -66,12 +67,14 @@ class MaboyAudioPlayer {
 
   Future<void> Function()? onNext;
   Future<void> Function()? onPrevious;
+  Future<void> Function(dynamic error)? onError;
 
   bool get playing => _playing;
   Duration get position => _position;
   Duration? get duration => _duration;
   double get speed => _speed;
   MaboyAudioSource? get audioSource => _audioSource;
+  bool get unsolicitedPlayBlocked => _unsolicitedPlayBlocked;
 
   Stream<bool> get playingStream => _playingController.stream;
   Stream<Duration> get positionStream => _positionController.stream;
@@ -126,9 +129,11 @@ class MaboyAudioPlayer {
         _playingController.add(false);
         _emitState();
       }),
-      player.stream.error.listen(
-        (error) => debugPrint('mpv playback error: $error'),
-      ),
+      player.stream.error.listen((error) {
+        debugPrint('mpv playback error: $error');
+        final callback = onError;
+        if (callback != null) unawaited(callback(error));
+      }),
       player.stream.mediaSessionCommands.listen((command) {
         if (command is mpv.MediaSessionCommandNext) {
           final callback = onNext;
@@ -136,6 +141,14 @@ class MaboyAudioPlayer {
         } else if (command is mpv.MediaSessionCommandPrevious) {
           final callback = onPrevious;
           if (callback != null) unawaited(callback());
+        } else if (command is mpv.MediaSessionCommandPlay ||
+            command is mpv.MediaSessionCommandPlayPause) {
+          if (_unsolicitedPlayBlocked) {
+            debugPrint(
+              'Suppressing unsolicited remote play command while blocked after disconnect',
+            );
+            unawaited(player.pause());
+          }
         }
       }),
     ]);
@@ -169,6 +182,11 @@ class MaboyAudioPlayer {
         artwork: artwork,
         appName: 'maboy',
         autoApplyPlaylistNavigation: false,
+        // pauseOnly: a Telegram voice note, a call or any other app can pause
+        // us by taking audio focus, but must never resume Maboy when it lets
+        // the focus go. The plugin default is pauseAndResume, and every
+        // setMediaSession resets to that default unless told otherwise.
+        interruptionPolicy: mpv.InterruptionPolicy.pauseOnly,
       ),
     );
     await player.open(
@@ -189,9 +207,25 @@ class MaboyAudioPlayer {
   }
 
   Future<void> play() async {
+    _unsolicitedPlayBlocked = false;
     if (_audioSource == null) return;
     final player = await _ensureNative();
     await player.play();
+  }
+
+  void clearUnsolicitedPlayBlock() {
+    _unsolicitedPlayBlocked = false;
+  }
+
+  Future<void> pauseDueToBecomingNoisy() async {
+    _unsolicitedPlayBlocked = true;
+    _playing = false;
+    _playingController.add(false);
+    _emitState();
+    final player = _native;
+    if (player != null) {
+      await player.pause();
+    }
   }
 
   Future<void> pause() async {

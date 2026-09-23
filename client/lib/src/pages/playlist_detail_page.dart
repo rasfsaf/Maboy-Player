@@ -373,8 +373,11 @@ class _PlaylistDetailPageState extends State<PlaylistDetailPage> {
                         ),
                       )
                     : ReorderableListView.builder(
-                        buildDefaultDragHandles: !_isSelecting,
+                        proxyDecorator: maboyReorderProxyDecorator,
+                        buildDefaultDragHandles: false,
                         itemCount: playlistTracks.length,
+                        onReorderStart: (_) => c.beginReorder(),
+                        onReorderEnd: (_) => c.endReorder(),
                         onReorder: (from, to) {
                           if (to > from) to--;
                           final ids = List<String>.from(validTrackIds);

@@ -22,16 +22,18 @@ class LocalMetadataService {
     final fileName = file.uri.pathSegments.isNotEmpty
         ? file.uri.pathSegments.last
         : file.path.split(Platform.pathSeparator).last;
-    final fallbackTitle = fileName.contains('.')
+    // Derive a human-readable fallback from the file name (strip extension).
+    final rawFallback = fileName.contains('.')
         ? fileName.substring(0, fileName.lastIndexOf('.'))
         : fileName;
+    final safeFallbackTitle = rawFallback.trim().isNotEmpty ? rawFallback.trim() : 'Track';
 
     try {
       final meta = readMetadata(file, getImage: artworkOutputPath != null);
       final rawTitle = meta.title?.trim();
       final title = (rawTitle != null && rawTitle.isNotEmpty)
           ? rawTitle
-          : fallbackTitle;
+          : safeFallbackTitle;
       final rawArtist = meta.artist?.trim() ?? meta.albumArtist?.trim();
       final artist = (rawArtist != null && rawArtist.isNotEmpty)
           ? rawArtist
@@ -62,7 +64,7 @@ class LocalMetadataService {
       );
     } catch (_) {
       return ParsedTrackMetadata(
-        title: fallbackTitle,
+        title: safeFallbackTitle,
         artist: null,
         album: null,
         durationMs: null,

@@ -11,6 +11,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'api.dart';
 import 'equalizer.dart';
 import 'services/audio_player.dart';
+import 'services/bounded_task_pool.dart';
 import 'services/device_music_service.dart';
 import 'services/local_metadata_service.dart';
 import 'services/media_service.dart';
@@ -45,6 +46,9 @@ class PlaybackQueueEntry {
 }
 
 class AppController extends ChangeNotifier {
+  static const int maxParallelDownloads = 3;
+  static const int maxParallelTransfers = 3;
+
   final MaboyAudioPlayer player = MaboyAudioPlayer();
   final YouTubeDownloadService ytService = YouTubeDownloadService();
   final YouTubePlaylistService ytPlaylistService = YouTubePlaylistService();
@@ -53,12 +57,20 @@ class AppController extends ChangeNotifier {
   final Map<String, String> artworkFiles = {};
   final Map<String, double> downloadProgress = {};
   final Set<String> downloadingIds = {};
+  final Map<String, String> failedDownloads = {};
+
+  final BoundedTaskPool<String> _downloadPool = BoundedTaskPool<String>(
+    maxConcurrent: maxParallelDownloads,
+  );
+  final BoundedTaskPool<String> _receivePool = BoundedTaskPool<String>(
+    maxConcurrent: maxParallelTransfers,
+  );
 
   final Map<String, WebSocket> _sources = {};
-  final Map<String, Future<void>> _receives = {};
   final List<StreamSubscription<dynamic>> _playerSubscriptions = [];
   WebSocket? _syncSocket;
   Timer? _syncReconnect;
+  Timer? _syncHeartbeat;
   List<String> _playbackIds = [];
   List<String> _playbackEntryKeys = [];
   int _playbackEntrySerial = 0;
@@ -66,7 +78,11 @@ class AppController extends ChangeNotifier {
   Timer? _poll;
   Timer? _equalizerApplyDebounce;
   bool _transferring = false;
+  bool _transferRequested = false;
   bool _switchingTrack = false;
+  bool _reordering = false;
+  int _consecutivePlaybackErrors = 0;
+  static const int maxConsecutivePlaybackErrors = 3;
   String deviceId = '';
   String? playingId;
   String? playingFolder;
@@ -109,11 +125,33 @@ class AppController extends ChangeNotifier {
     playbackManager.addListener(notifyListeners);
     player.onNext = playNext;
     player.onPrevious = playPrevious;
+    player.onError = (err) async {
+      _consecutivePlaybackErrors++;
+      debugPrint(
+        'Maboy player error ($_consecutivePlaybackErrors/$maxConsecutivePlaybackErrors): $err',
+      );
+      if (_consecutivePlaybackErrors >= maxConsecutivePlaybackErrors) {
+        debugPrint(
+          'Too many consecutive playback errors ($maxConsecutivePlaybackErrors). Halting auto-skip.',
+        );
+        transferStatus =
+            'Ошибка воспроизведения нескольких треков подряд. Воспроизведение остановлено.';
+        await player.stop();
+        notifyListeners();
+        return;
+      }
+      await playNext();
+    };
 
     MediaService.listenToBecomingNoisy(() {
-      if (player.playing) {
-        unawaited(player.pause());
-      }
+      debugPrint(
+        'Becoming noisy received: halting audio immediately and blocking unsolicited auto-play',
+      );
+      unawaited(
+        player.pauseDueToBecomingNoisy().then((_) {
+          notifyListeners();
+        }),
+      );
     });
 
     _playerSubscriptions.add(
@@ -145,7 +183,7 @@ class AppController extends ChangeNotifier {
       if (id.isEmpty || !seen.add(id)) continue;
       final track = tracks.where((entry) => entry['id'] == id).firstOrNull;
       if (track != null) result.add(track);
-      if (result.length == 12) break;
+      if (result.length >= 50) break;
     }
     return result;
   }
@@ -455,15 +493,16 @@ class AppController extends ChangeNotifier {
     final idx = currentPlaybackIndex;
     for (var i = idx - 1; i >= 0; i--) {
       final prevId = _playbackIds[i];
+      if (deletedLocallyIds.contains(prevId)) continue;
       final track = tracks.where((t) => t['id'] == prevId).firstOrNull;
       if (track != null) {
-        await playTrack(
+        final ok = await playTrack(
           track,
           folderId: playingFolder,
           playbackIds: _playbackIds,
           playbackIndex: i,
         );
-        return;
+        if (ok) return;
       }
     }
   }
@@ -474,15 +513,16 @@ class AppController extends ChangeNotifier {
     final idx = currentPlaybackIndex;
     for (var i = idx + 1; i < _playbackIds.length; i++) {
       final nextId = _playbackIds[i];
+      if (deletedLocallyIds.contains(nextId)) continue;
       final track = tracks.where((t) => t['id'] == nextId).firstOrNull;
       if (track != null) {
-        await playTrack(
+        final ok = await playTrack(
           track,
           folderId: playingFolder,
           playbackIds: _playbackIds,
           playbackIndex: i,
         );
-        return;
+        if (ok) return;
       }
     }
     if (isShuffle) {
@@ -492,15 +532,16 @@ class AppController extends ChangeNotifier {
       // Loop back to the beginning of the playlist/tracklist
       for (var i = 0; i <= idx && i < _playbackIds.length; i++) {
         final nextId = _playbackIds[i];
+        if (deletedLocallyIds.contains(nextId)) continue;
         final track = tracks.where((t) => t['id'] == nextId).firstOrNull;
         if (track != null) {
-          await playTrack(
+          final ok = await playTrack(
             track,
             folderId: playingFolder,
             playbackIds: _playbackIds,
             playbackIndex: i,
           );
-          return;
+          if (ok) return;
         }
       }
     }
@@ -530,6 +571,14 @@ class AppController extends ChangeNotifier {
         return;
       }
       _syncSocket = socket;
+      _syncHeartbeat?.cancel();
+      _syncHeartbeat = Timer.periodic(const Duration(seconds: 20), (_) {
+        try {
+          _syncSocket?.add('ping');
+        } catch (_) {
+          _syncDisconnected();
+        }
+      });
       socket.listen(
         (message) {
           if (message is String) {
@@ -538,12 +587,7 @@ class AppController extends ChangeNotifier {
               if (data['type'] == 'relay_request') {
                 final trackId = data['track_id'] as String?;
                 if (trackId != null && localFiles.containsKey(trackId)) {
-                  final track = tracks
-                      .where((t) => t['id'] == trackId)
-                      .firstOrNull;
-                  if (track != null) {
-                    unawaited(_connectSource(track));
-                  }
+                  unawaited(_connectSource(trackId));
                 }
                 return;
               }
@@ -561,6 +605,8 @@ class AppController extends ChangeNotifier {
   }
 
   void _syncDisconnected() {
+    _syncHeartbeat?.cancel();
+    _syncHeartbeat = null;
     _syncSocket = null;
     _syncReconnect?.cancel();
     if (token != null) {
@@ -678,13 +724,17 @@ class AppController extends ChangeNotifier {
     );
   }
 
-  Future<void> _connectSource(Map<String, dynamic> track) async {
-    final id = track['id'] as String;
+  Future<void> _connectSource(String id) async {
     final path = localFiles[id];
-    if (path == null ||
-        !await File(path).exists() ||
-        _sources.containsKey(id)) {
+    if (path == null || !await File(path).exists()) {
       return;
+    }
+    final existing = _sources[id];
+    if (existing != null) {
+      if (existing.closeCode == null) {
+        return;
+      }
+      _sources.remove(id);
     }
     try {
       final socket = await WebSocket.connect(
@@ -710,14 +760,13 @@ class AppController extends ChangeNotifier {
     } catch (_) {}
   }
 
-  Future<void> _receive(Map<String, dynamic> track) {
+  Future<void> _receive(Map<String, dynamic> track, {bool priority = false}) {
     final id = track['id'] as String;
-    final existing = _receives[id];
-    if (existing != null) return existing;
-
-    final receive = _receiveImpl(track);
-    _receives[id] = receive;
-    return receive.whenComplete(() => _receives.remove(id));
+    return _receivePool.enqueue(
+      id,
+      () => _receiveImpl(track),
+      priority: priority,
+    );
   }
 
   Future<void> _receiveImpl(Map<String, dynamic> track) async {
@@ -742,7 +791,8 @@ class AppController extends ChangeNotifier {
     await directory.create(recursive: true);
 
     final target = File('${directory.path}/$id.mp3');
-    final temp = File('${directory.path}/$id.part');
+    // Relay and local YouTube fallback must never write the same .part file.
+    final temp = File('${directory.path}/$id.relay.part');
     for (var attempt = 1; attempt <= 3; attempt++) {
       WebSocket? socket;
       IOSink? sink;
@@ -767,8 +817,13 @@ class AppController extends ChangeNotifier {
             await output.flush();
             await output.close();
             sink = null;
-            await temp.rename(target.path);
+            if (localFiles[id] == target.path && await target.exists()) {
+              await temp.delete();
+            } else {
+              await temp.rename(target.path);
+            }
             localFiles[id] = target.path;
+            failedDownloads.remove(id);
             await _saveFiles();
             transferStatus = 'Получено: ${track['title']}';
             notifyListeners();
@@ -794,76 +849,110 @@ class AppController extends ChangeNotifier {
         await Future<void>.delayed(Duration(seconds: attempt));
       }
     }
+    if (!localFiles.containsKey(id)) {
+      if (transferStatus.contains('Получение') ||
+          transferStatus.contains('Повторное получение')) {
+        transferStatus = '';
+        notifyListeners();
+      }
+    }
   }
 
   Future<void> transferNow() async {
-    if (_transferring || token == null) return;
+    if (token == null) return;
+    if (_transferring) {
+      _transferRequested = true;
+      return;
+    }
     _transferring = true;
     try {
-      await sync();
-      final localTracks = List<Map<String, dynamic>>.from(
-        tracks.where((t) => t['provider'] == 'local'),
-      );
-      final youtubeTracks = List<Map<String, dynamic>>.from(
-        tracks.where((t) => t['provider'] == 'youtube'),
-      );
+      var sourceUnavailable = false;
+      do {
+        _transferRequested = false;
+        await sync();
+        final localTracks = List<Map<String, dynamic>>.from(
+          tracks.where((t) => t['provider'] == 'local'),
+        );
+        final youtubeTracks = List<Map<String, dynamic>>.from(
+          tracks.where((t) => t['provider'] == 'youtube'),
+        );
 
-      // 1. Trigger background download for missing YouTube tracks
-      for (final track in youtubeTracks) {
-        final trackId = track['id'] as String;
-        if (!localFiles.containsKey(trackId) &&
-            !downloadingIds.contains(trackId)) {
-          unawaited(downloadYouTubeTrack(track));
-        }
-      }
-
-      // 2. Connect sources for local tracks present on this device
-      for (final track in localTracks) {
-        final trackId = track['id'] as String;
-        if (deletedLocallyIds.contains(trackId)) continue;
-        if (localFiles.containsKey(trackId)) {
-          // Keep up to 10 active connections simultaneously; remaining tracks seed on-demand via relay_request
-          if (_sources.length < 10) {
-            await _connectSource(track);
+        // 1. Trigger background download for missing YouTube tracks (skip failed)
+        for (final track in youtubeTracks) {
+          final trackId = track['id'] as String;
+          if (!localFiles.containsKey(trackId) &&
+              !downloadingIds.contains(trackId) &&
+              !failedDownloads.containsKey(trackId)) {
+            unawaited(downloadYouTubeTrack(track));
           }
         }
-      }
 
-      // 3. Receive local tracks that are missing on this device
-      final missingLocal = localTracks.where((t) {
-        final tid = t['id'] as String;
-        return !deletedLocallyIds.contains(tid) && !localFiles.containsKey(tid);
-      }).toList();
+        // 2. Connect sources for all tracks present on this device (local & downloaded YouTube)
+        final seedableTracks = tracks.where((t) {
+          final trackId = t['id'] as String;
+          return !deletedLocallyIds.contains(trackId) &&
+              localFiles.containsKey(trackId);
+        });
+        for (final track in seedableTracks) {
+          if (_sources.length < 10) {
+            await _connectSource(track['id'] as String);
+          }
+        }
 
-      int receivedCount = 0;
-      int consecutiveFailures = 0;
-      for (int i = 0; i < missingLocal.length; i++) {
-        final track = missingLocal[i];
-        final tid = track['id'] as String;
-        transferStatus =
-            'Получение (${i + 1}/${missingLocal.length}): ${track['title']}';
-        notifyListeners();
-        await _receive(track);
-        if (localFiles.containsKey(tid)) {
-          receivedCount++;
-          consecutiveFailures = 0;
-        } else {
-          consecutiveFailures++;
-          // If 3 consecutive tracks fail and none were received, the remote source is offline
-          if (consecutiveFailures >= 3 && receivedCount == 0) {
+        // 3. Receive local tracks that are missing on this device
+        final missingLocal = localTracks.where((t) {
+          final tid = t['id'] as String;
+          return !deletedLocallyIds.contains(tid) &&
+              !localFiles.containsKey(tid);
+        }).toList();
+
+        if (missingLocal.isEmpty) {
+          break;
+        }
+
+        var receivedCount = 0;
+        for (
+          var offset = 0;
+          offset < missingLocal.length;
+          offset += maxParallelTransfers
+        ) {
+          final batch = missingLocal
+              .skip(offset)
+              .take(maxParallelTransfers)
+              .toList();
+          transferStatus =
+              'Получение (${offset + 1}-${offset + batch.length}/'
+              '${missingLocal.length})';
+          notifyListeners();
+          await Future.wait(batch.map((track) => _receive(track)));
+          final batchReceived = batch.where((track) {
+            final trackId = track['id'] as String;
+            return localFiles.containsKey(trackId);
+          }).length;
+          receivedCount += batchReceived;
+
+          // Do not enqueue hundreds of doomed transfers when no source device
+          // answered the first full parallel batch.
+          if (receivedCount == 0 && batch.length == maxParallelTransfers) {
+            sourceUnavailable = true;
             transferStatus = 'Устройство-источник пока недоступно в сети';
             notifyListeners();
             break;
           }
         }
-      }
 
-      if (missingLocal.isNotEmpty && consecutiveFailures < 3) {
-        transferStatus = receivedCount > 0
-            ? 'Передано треков: $receivedCount из ${missingLocal.length}'
-            : 'Устройство-источник пока недоступно в сети';
-        notifyListeners();
-      }
+        if (receivedCount > 0) {
+          final remaining = localTracks.where((t) {
+            final tid = t['id'] as String;
+            return !deletedLocallyIds.contains(tid) &&
+                !localFiles.containsKey(tid);
+          }).length;
+          transferStatus = remaining == 0
+              ? 'Все треки переданы ($receivedCount)'
+              : 'Передано треков: $receivedCount, осталось: $remaining';
+          notifyListeners();
+        }
+      } while (_transferRequested && !sourceUnavailable);
     } finally {
       _transferring = false;
     }
@@ -1004,10 +1093,26 @@ class AppController extends ChangeNotifier {
     return id;
   }
 
-  Future<void> downloadYouTubeTrack(Map<String, dynamic> track) async {
+  Future<void> downloadYouTubeTrack(
+    Map<String, dynamic> track, {
+    bool force = false,
+    bool priority = false,
+  }) async {
+    final id = track['id'] as String;
+    if (!force && failedDownloads.containsKey(id)) return;
+    return _downloadPool.enqueue(
+      id,
+      () => _downloadYouTubeTrack(track, force: force),
+      priority: priority || force,
+    );
+  }
+
+  Future<void> _downloadYouTubeTrack(
+    Map<String, dynamic> track, {
+    required bool force,
+  }) async {
     final id = track['id'] as String;
     final videoId = track['source_id'] as String;
-    if (downloadingIds.contains(id)) return;
     downloadingIds.add(id);
     downloadProgress[id] = 0.0;
     notifyListeners();
@@ -1018,34 +1123,109 @@ class AppController extends ChangeNotifier {
       await musicDir.create(recursive: true);
 
       final outMp3Path = '${musicDir.path}/$id.mp3';
-      final file = await ytService.downloadMp3(
-        videoId: videoId,
-        outputFilePath: outMp3Path,
-        onProgress: (progress) {
-          downloadProgress[id] = progress;
-          notifyListeners();
-        },
-      );
-
-      if (file != null && await file.exists()) {
-        localFiles[id] = file.path;
+      final existingFile = File(outMp3Path);
+      if (await existingFile.exists() && await existingFile.length() > 5000) {
+        localFiles[id] = existingFile.path;
+        failedDownloads.remove(id);
+        await _saveFiles();
+        transferStatus = 'MP3 скачан: ${track['title']}';
+        notifyListeners();
+        return;
       }
 
-      final thumbUrl = track['thumbnail_url'] as String?;
-      if (thumbUrl != null && thumbUrl.isNotEmpty) {
-        final artFile = await ytService.downloadThumbnail(
-          thumbUrl,
-          '${musicDir.path}/$id.jpg',
+      YouTubeDownloadResult result;
+      try {
+        final serverFile = await api.downloadFile(
+          '/youtube/tracks/$id/audio',
+          outMp3Path,
+          onProgress: (progress) {
+            downloadProgress[id] = progress;
+            notifyListeners();
+          },
         );
-        if (artFile != null && await artFile.exists()) {
-          artworkFiles[id] = artFile.path;
+        result = YouTubeDownloadResult(file: serverFile);
+      } catch (serverError) {
+        debugPrint('Server YouTube download failed for $id: $serverError');
+        // The relay may have completed while the server download was running.
+        if (await existingFile.exists() && await existingFile.length() > 5000) {
+          result = YouTubeDownloadResult(file: existingFile);
+        } else {
+          result = await ytService.downloadMp3Result(
+            videoId: videoId,
+            outputFilePath: outMp3Path,
+            onProgress: (progress) {
+              downloadProgress[id] = progress;
+              notifyListeners();
+            },
+          );
+          if (!result.isSuccess && result.errorMessage == null) {
+            result = YouTubeDownloadResult(
+              errorMessage: friendlyErrorMessage(serverError),
+            );
+          }
         }
       }
 
-      await _saveFiles();
-      transferStatus = 'MP3 скачан: ${track['title']}';
-    } catch (_) {
-      transferStatus = 'Ошибка скачивания: ${track['title']}';
+      if (result.isSuccess && await result.file!.exists()) {
+        localFiles[id] = result.file!.path;
+        failedDownloads.remove(id);
+
+        final thumbUrl = track['thumbnail_url'] as String?;
+        if (thumbUrl != null && thumbUrl.isNotEmpty) {
+          final artFile = await ytService.downloadThumbnail(
+            thumbUrl,
+            '${musicDir.path}/$id.jpg',
+          );
+          if (artFile != null && await artFile.exists()) {
+            artworkFiles[id] = artFile.path;
+          }
+        }
+
+        await _saveFiles();
+        transferStatus = 'MP3 скачан: ${track['title']}';
+      } else {
+        final err = result.errorMessage ?? 'Не удалось получить аудиопоток';
+        failedDownloads[id] = err;
+        transferStatus = 'Ошибка: $err (${track['title']})';
+        notifyListeners();
+
+        // Fallback: if direct YouTube download failed on this device,
+        // attempt peer receive in case another user device (e.g. PC) has it
+        if (token != null) {
+          await _receive(track);
+          if (localFiles.containsKey(id)) {
+            failedDownloads.remove(id);
+            transferStatus = 'Получено через синхронизацию: ${track['title']}';
+            notifyListeners();
+          } else {
+            transferStatus = 'Ошибка: $err (${track['title']})';
+            notifyListeners();
+            Future.delayed(const Duration(seconds: 4), () {
+              if (transferStatus.startsWith('Ошибка')) {
+                transferStatus = '';
+                notifyListeners();
+              }
+            });
+          }
+        } else {
+          Future.delayed(const Duration(seconds: 4), () {
+            if (transferStatus.startsWith('Ошибка')) {
+              transferStatus = '';
+              notifyListeners();
+            }
+          });
+        }
+      }
+    } catch (e) {
+      final err = 'Ошибка скачивания: $e';
+      failedDownloads[id] = err;
+      transferStatus = '$err (${track['title']})';
+      Future.delayed(const Duration(seconds: 4), () {
+        if (transferStatus.startsWith('Ошибка')) {
+          transferStatus = '';
+          notifyListeners();
+        }
+      });
     } finally {
       downloadingIds.remove(id);
       downloadProgress.remove(id);
@@ -1058,7 +1238,8 @@ class AppController extends ChangeNotifier {
     if (trackId != null) {
       final track = tracks.where((t) => t['id'] == trackId).firstOrNull;
       if (track != null) {
-        await playTrack(track);
+        transferStatus = 'Трек добавлен в библиотеку: ${track['title']}';
+        notifyListeners();
       }
     }
   }
@@ -1086,6 +1267,7 @@ class AppController extends ChangeNotifier {
     }
 
     final ids = <String>[];
+    final operations = <Map<String, dynamic>>[];
     final docDir = await getApplicationDocumentsDirectory();
     final directory = Directory('${docDir.path}/music');
     await directory.create(recursive: true);
@@ -1108,33 +1290,56 @@ class AppController extends ChangeNotifier {
       if (meta.artworkPath != null) {
         artworkFiles[id] = meta.artworkPath!;
       }
-
-      await _saveFiles();
       ids.add(id);
 
-      await mutate('track.upsert', {
-        'id': id,
-        'provider': 'local',
-        'source_id': '$deviceId:$id',
-        'title': meta.title,
-        'artist': meta.artist,
-        'album': meta.album,
-        'duration_ms': meta.durationMs,
-        'added_at': DateTime.now().toUtc().toIso8601String(),
+      operations.add({
+        'kind': 'track.upsert',
+        'payload': {
+          'id': id,
+          'provider': 'local',
+          'source_id': '$deviceId:$id',
+          'title': meta.title,
+          'artist': meta.artist,
+          'album': meta.album,
+          'duration_ms': meta.durationMs,
+          'added_at': DateTime.now().toUtc().toIso8601String(),
+        },
       });
     }
 
+    await _saveFiles();
+
     if (folder && ids.isNotEmpty) {
       final playlistId = newId();
-      await mutate('playlist.upsert', {
-        'id': playlistId,
-        'name': name!,
-        'sort_key': playlists.length,
+      operations.add({
+        'kind': 'playlist.upsert',
+        'payload': {
+          'id': playlistId,
+          'name': name!,
+          'sort_key': playlists.length,
+        },
       });
-      await mutate('playlist.set_tracks', {
-        'playlist_id': playlistId,
-        'track_ids': ids,
+      operations.add({
+        'kind': 'playlist.set_tracks',
+        'payload': {'playlist_id': playlistId, 'track_ids': ids},
       });
+    }
+
+    if (operations.isNotEmpty) {
+      // Apply all ops locally and stage them in pending in one batch,
+      // then do a single save+sync instead of N round-trips.
+      for (final op in operations) {
+        final kind = op['kind'] as String;
+        final payload = op['payload'] as Map<String, dynamic>;
+        pending.add({
+          'operation_id': newId(),
+          'kind': kind,
+          'payload': payload,
+        });
+        apply(kind, payload);
+      }
+      await save();
+      await sync();
     }
     await transferNow();
   }
@@ -1335,159 +1540,201 @@ class AppController extends ChangeNotifier {
     return null;
   }
 
-  Future<void> playTrack(
+  Future<bool> playTrack(
     Map<String, dynamic> track, {
     String? folderId,
     List<String>? playbackIds,
     int? playbackIndex,
   }) async {
-    if (_switchingTrack) return;
+    if (_switchingTrack) return false;
     _switchingTrack = true;
+    final prevPlayingId = playingId;
+    final prevPlayingFolder = playingFolder;
+    final prevPlaybackIndex = _currentPlaybackIndex;
+    final prevPlaybackIds = List<String>.from(_playbackIds);
+    final prevPlaybackKeys = List<String>.from(_playbackEntryKeys);
+    var success = false;
+
     try {
-    final id = track['id'] as String;
+      final id = track['id'] as String;
 
-    // Immediately highlight and select the track so the UI updates instantly
-    playingId = id;
-    playingFolder = folderId;
-    if (playbackIds != null && playbackIds.isNotEmpty) {
-      if (!listEquals(_playbackIds, playbackIds) ||
-          _playbackEntryKeys.length != playbackIds.length) {
-        _replacePlaybackIds(playbackIds);
+      // If the track is marked as deleted on this device, skip it immediately
+      if (deletedLocallyIds.contains(id)) {
+        transferStatus = 'Трек удален с этого устройства: ${track['title']}';
+        notifyListeners();
+        return false;
       }
-    } else if (folderId != null) {
-      final playlist = playlists.where((p) => p['id'] == folderId).firstOrNull;
-      _replacePlaybackIds(
-        List<String>.from(playlist?['track_ids'] as List? ?? [id]),
-      );
-    } else {
-      _replacePlaybackIds(tracks.map((t) => t['id'] as String));
-    }
-    _currentPlaybackIndex =
-        playbackIndex != null &&
-            playbackIndex >= 0 &&
-            playbackIndex < _playbackIds.length &&
-            _playbackIds[playbackIndex] == id
-        ? playbackIndex
-        : _playbackIds.indexOf(id);
-    notifyListeners();
 
-    var localPath = localFiles[id];
-    if (localPath != null && !await File(localPath).exists()) {
-      localFiles.remove(id);
-      localPath = null;
-      unawaited(_saveFiles());
-    }
-
-    // 1. If local file exists, play immediately
-    if (localPath != null) {
-      try {
-        final source = MediaService.createAudioSource(
-          trackId: id,
-          title: track['title'] as String,
-          artist: track['artist'] as String?,
-          album: track['album'] as String?,
-          localFilePath: localPath,
-          localArtworkPath: artworkFiles[id],
-          thumbnailNetworkUrl: track['thumbnail_url'] as String?,
+      // Immediately highlight and select the track so the UI updates instantly
+      playingId = id;
+      playingFolder = folderId;
+      if (playbackIds != null && playbackIds.isNotEmpty) {
+        if (!listEquals(_playbackIds, playbackIds) ||
+            _playbackEntryKeys.length != playbackIds.length) {
+          _replacePlaybackIds(playbackIds);
+        }
+      } else if (folderId != null) {
+        final playlist = playlists
+            .where((p) => p['id'] == folderId)
+            .firstOrNull;
+        _replacePlaybackIds(
+          List<String>.from(playlist?['track_ids'] as List? ?? [id]),
         );
-        await player.setAudioSource(source);
-        unawaited(_recordHistory(id));
-        await player.play();
-      } catch (e) {
-        debugPrint('Error playing local file: $e');
-        transferStatus = 'Ошибка воспроизведения: $e';
+      } else {
+        _replacePlaybackIds(tracks.map((t) => t['id'] as String));
       }
+      _currentPlaybackIndex =
+          playbackIndex != null &&
+              playbackIndex >= 0 &&
+              playbackIndex < _playbackIds.length &&
+              _playbackIds[playbackIndex] == id
+          ? playbackIndex
+          : _playbackIds.indexOf(id);
       notifyListeners();
-      return;
-    }
 
-    // 2. If it's a YouTube track and not yet downloaded, stream immediately while downloading
-    if (track['provider'] == 'youtube') {
-      transferStatus = 'Подключение к потоку YouTube: ${track['title']}';
-      notifyListeners();
-      try {
-        final streamUrl = await ytService.getStreamUrl(
-          track['source_id'] as String,
-        );
-        if (streamUrl != null) {
+      var localPath = localFiles[id];
+      if (localPath != null && !await File(localPath).exists()) {
+        localFiles.remove(id);
+        localPath = null;
+        unawaited(_saveFiles());
+      }
+
+      // 1. If local file exists, play immediately
+      if (localPath != null) {
+        try {
           final source = MediaService.createAudioSource(
             trackId: id,
             title: track['title'] as String,
             artist: track['artist'] as String?,
             album: track['album'] as String?,
-            streamUrl: streamUrl,
+            localFilePath: localPath,
             localArtworkPath: artworkFiles[id],
             thumbnailNetworkUrl: track['thumbnail_url'] as String?,
           );
           await player.setAudioSource(source);
           unawaited(_recordHistory(id));
           await player.play();
-          unawaited(downloadYouTubeTrack(track));
           notifyListeners();
-          return;
+          return success = true;
+        } catch (e) {
+          debugPrint('Error playing local file: $e');
+          transferStatus = 'Ошибка воспроизведения: $e';
+          notifyListeners();
+          return false;
         }
-      } catch (e) {
-        debugPrint('Error streaming YouTube: $e');
-        transferStatus = 'Ошибка YouTube: $e';
       }
-      notifyListeners();
-      return;
-    }
 
-    // 3. Check if matching audio exists on device in music folders
-    final foundPath = await _findLocalFileForTrack(track);
-    if (foundPath != null) {
-      localFiles[id] = foundPath;
-      unawaited(_saveFiles());
-      try {
-        final source = MediaService.createAudioSource(
-          trackId: id,
-          title: track['title'] as String,
-          artist: track['artist'] as String?,
-          album: track['album'] as String?,
-          localFilePath: foundPath,
-          localArtworkPath: artworkFiles[id],
-        );
-        await player.setAudioSource(source);
-        unawaited(_recordHistory(id));
-        await player.play();
-      } catch (e) {
-        debugPrint('Error playing discovered local audio: $e');
-        transferStatus = 'Ошибка воспроизведения: $e';
+      // 2. If it's a YouTube track and not yet downloaded, stream immediately while downloading
+      if (track['provider'] == 'youtube') {
+        transferStatus = 'Подключение к потоку YouTube: ${track['title']}';
+        notifyListeners();
+        try {
+          final streamResult = await ytService.getStreamResult(
+            track['source_id'] as String,
+          );
+          if (streamResult.isSuccess) {
+            final source = MediaService.createAudioSource(
+              trackId: id,
+              title: track['title'] as String,
+              artist: track['artist'] as String?,
+              album: track['album'] as String?,
+              streamUrl: streamResult.url,
+              localArtworkPath: artworkFiles[id],
+              thumbnailNetworkUrl: track['thumbnail_url'] as String?,
+            );
+            await player.setAudioSource(source);
+            unawaited(_recordHistory(id));
+            await player.play();
+            unawaited(downloadYouTubeTrack(track));
+            notifyListeners();
+            return success = true;
+          } else {
+            transferStatus =
+                '${streamResult.errorMessage ?? 'Поток YouTube недоступен'}: '
+                '${track['title']}. Трек поставлен на скачивание.';
+            notifyListeners();
+            unawaited(downloadYouTubeTrack(track, force: true, priority: true));
+            return false;
+          }
+        } catch (e) {
+          debugPrint('Error streaming YouTube: $e');
+          transferStatus =
+              'Ошибка потока YouTube (${friendlyErrorMessage(e)}): ${track['title']}. Трек поставлен на скачивание.';
+          notifyListeners();
+          unawaited(downloadYouTubeTrack(track, force: true, priority: true));
+          return false;
+        }
       }
-      notifyListeners();
-      return;
-    }
 
-    // 4. Missing file on this device: trigger peer transfer
-    transferStatus = 'Загрузка с другого устройства: ${track['title']}...';
-    notifyListeners();
-    // Do not wait for the whole batch here. The selected track can be
-    // available while transferNow is still receiving other tracks.
-    await _receive(track);
-    localPath = localFiles[id];
-    if (localPath != null && await File(localPath).exists()) {
-      try {
-        final source = MediaService.createAudioSource(
-          trackId: id,
-          title: track['title'] as String,
-          artist: track['artist'] as String?,
-          album: track['album'] as String?,
-          localFilePath: localPath,
-          localArtworkPath: artworkFiles[id],
-        );
-        await player.setAudioSource(source);
-        unawaited(_recordHistory(id));
-        await player.play();
-      } catch (e) {
-        debugPrint('Error playing transferred file: $e');
-        transferStatus = 'Ошибка воспроизведения: $e';
+      // 3. Check if matching audio exists on device in music folders
+      final foundPath = await _findLocalFileForTrack(track);
+      if (foundPath != null) {
+        localFiles[id] = foundPath;
+        unawaited(_saveFiles());
+        try {
+          final source = MediaService.createAudioSource(
+            trackId: id,
+            title: track['title'] as String,
+            artist: track['artist'] as String?,
+            album: track['album'] as String?,
+            localFilePath: foundPath,
+            localArtworkPath: artworkFiles[id],
+          );
+          await player.setAudioSource(source);
+          unawaited(_recordHistory(id));
+          await player.play();
+          notifyListeners();
+          return success = true;
+        } catch (e) {
+          debugPrint('Error playing discovered local audio: $e');
+          transferStatus = 'Ошибка воспроизведения: $e';
+          notifyListeners();
+          return false;
+        }
       }
-    } else {
-      transferStatus = 'Файл пока не передан на это устройство';
-    }
-    notifyListeners();
+
+      // 4. Missing file on this device: trigger peer transfer
+      transferStatus = 'Загрузка с другого устройства: ${track['title']}...';
+      notifyListeners();
+      await _receive(track, priority: true);
+      localPath = localFiles[id];
+      if (localPath != null && await File(localPath).exists()) {
+        try {
+          final source = MediaService.createAudioSource(
+            trackId: id,
+            title: track['title'] as String,
+            artist: track['artist'] as String?,
+            album: track['album'] as String?,
+            localFilePath: localPath,
+            localArtworkPath: artworkFiles[id],
+          );
+          await player.setAudioSource(source);
+          unawaited(_recordHistory(id));
+          await player.play();
+          notifyListeners();
+          return success = true;
+        } catch (e) {
+          debugPrint('Error playing transferred file: $e');
+          transferStatus = 'Ошибка воспроизведения: $e';
+          notifyListeners();
+          return false;
+        }
+      } else {
+        transferStatus = 'Файл пока не передан на это устройство';
+        notifyListeners();
+        return false;
+      }
     } finally {
+      if (success) {
+        _consecutivePlaybackErrors = 0;
+      } else {
+        playingId = prevPlayingId;
+        playingFolder = prevPlayingFolder;
+        _currentPlaybackIndex = prevPlaybackIndex;
+        _playbackIds = prevPlaybackIds;
+        _playbackEntryKeys = prevPlaybackKeys;
+        notifyListeners();
+      }
       _switchingTrack = false;
     }
   }
@@ -1502,11 +1749,22 @@ class AppController extends ChangeNotifier {
     });
   }
 
-  Future<void> setPlaylistTracks(String playlistId, Iterable<String> ids) =>
-      mutate('playlist.set_tracks', {
-        'playlist_id': playlistId,
-        'track_ids': ids.toList(),
-      });
+  Future<void> setPlaylistTracks(
+    String playlistId,
+    Iterable<String> ids,
+  ) async {
+    final list = ids.toList();
+    await mutate('playlist.set_tracks', {
+      'playlist_id': playlistId,
+      'track_ids': list,
+    });
+    if (playingFolder == playlistId && !isShuffle) {
+      _replacePlaybackIds(list);
+      _currentPlaybackIndex = _playbackIds.indexOf(playingId ?? '');
+      if (_reordering) return;
+      notifyListeners();
+    }
+  }
 
   Future<void> renamePlaylist(Map<String, dynamic> playlist, String name) =>
       mutate('playlist.upsert', {
@@ -1536,10 +1794,16 @@ class AppController extends ChangeNotifier {
 
   Future<void> reorderTracks(int from, int to) async {
     if (to > from) to--;
+    if (from == to) return;
     final item = tracks.removeAt(from);
     tracks.insert(to, item);
-    await save();
-    notifyListeners();
+    if (playingFolder == null && !isShuffle) {
+      _replacePlaybackIds(tracks.map((t) => t['id'] as String));
+      _currentPlaybackIndex = _playbackIds.indexOf(playingId ?? '');
+    }
+    await mutate('track.set_order', {
+      'track_ids': tracks.map((track) => track['id'] as String).toList(),
+    });
   }
 
   Future<void> addTracksToPlaylist(
@@ -1642,6 +1906,19 @@ class AppController extends ChangeNotifier {
     );
   }
 
+  /// Freezes list rebuilds while a drag is in flight. ReorderableListView
+  /// animates item slots itself; rebuilding the list on every index change
+  /// interrupts that animation and makes the drag stutter.
+  void beginReorder() {
+    _reordering = true;
+  }
+
+  void endReorder() {
+    if (!_reordering) return;
+    _reordering = false;
+    notifyListeners();
+  }
+
   /// Reorders only the future part of the active sequence. The current and
   /// already played tracks are immutable so playback cannot jump unexpectedly.
   void reorderUpcomingPlayback(int oldIndex, int newIndex) {
@@ -1661,6 +1938,7 @@ class AppController extends ChangeNotifier {
     final movedKey = _playbackEntryKeys.removeAt(firstUpcoming + oldIndex);
     _playbackIds.insert(firstUpcoming + newIndex, moved);
     _playbackEntryKeys.insert(firstUpcoming + newIndex, movedKey);
+    if (_reordering) return;
     notifyListeners();
   }
 
@@ -1682,7 +1960,6 @@ class AppController extends ChangeNotifier {
     account = prefs.getString('account');
     token = await _secure.read(key: 'session');
     if (token != null && account != null) {
-      await _loadFiles();
       final state = prefs.getString('state_$account');
       if (state != null) {
         final data = jsonDecode(state) as Map<String, dynamic>;
@@ -1726,6 +2003,7 @@ class AppController extends ChangeNotifier {
           }
         }
       }
+      await _loadFiles();
     }
     await _loadEqualizerDeviceState(prefs);
     volume = prefs.getDouble('volume') ?? 1.0;
@@ -1851,7 +2129,7 @@ class AppController extends ChangeNotifier {
       await _secure.write(key: 'session', value: token);
       await save();
     } catch (e) {
-      error = '$e';
+      error = friendlyErrorMessage(e);
     } finally {
       busy = false;
       notifyListeners();
@@ -1864,6 +2142,8 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> signOut() async {
+    _syncHeartbeat?.cancel();
+    _syncHeartbeat = null;
     _syncReconnect?.cancel();
     final socket = _syncSocket;
     _syncSocket = null;
@@ -1899,6 +2179,7 @@ class AppController extends ChangeNotifier {
   @override
   void dispose() {
     _poll?.cancel();
+    _syncHeartbeat?.cancel();
     _equalizerApplyDebounce?.cancel();
     _syncReconnect?.cancel();
     _syncSocket?.close();
@@ -1924,10 +2205,45 @@ class AppController extends ChangeNotifier {
     await sync();
   }
 
-  void apply(String kind, Map<String, dynamic> p) {
+  Future<void> mutateBatch(List<Map<String, dynamic>> operations) async {
+    if (account == null || operations.isEmpty) return;
+    for (final op in operations) {
+      final kind = op['kind'] as String;
+      final payload = Map<String, dynamic>.from(op['payload'] as Map);
+      final entry = {'operation_id': newId(), 'kind': kind, 'payload': payload};
+      pending.add(entry);
+      apply(kind, payload, notify: false);
+    }
+    notifyListeners();
+    await save();
+    await sync();
+  }
+
+  void apply(String kind, Map<String, dynamic> p, {bool notify = true}) {
     if (kind == 'track.upsert') {
-      tracks.removeWhere((t) => t['id'] == p['id']);
-      tracks.add(Map.of(p));
+      final index = tracks.indexWhere((t) => t['id'] == p['id']);
+      if (index < 0) {
+        tracks.add(Map.of(p));
+      } else {
+        tracks[index] = Map.of(p);
+      }
+    } else if (kind == 'track.set_order') {
+      // A concurrent import may add tracks absent from this snapshot. Keep them
+      // at the end instead of dropping them when the ordering event arrives.
+      final byId = {for (final track in tracks) track['id'] as String: track};
+      final ordered = <Map<String, dynamic>>[];
+      for (final id in (p['track_ids'] as List).cast<String>()) {
+        final track = byId.remove(id);
+        if (track != null) ordered.add(track);
+      }
+      tracks
+        ..clear()
+        ..addAll(ordered)
+        ..addAll(byId.values);
+      if (playingFolder == null && !isShuffle) {
+        _replacePlaybackIds(tracks.map((track) => track['id'] as String));
+        _currentPlaybackIndex = _playbackIds.indexOf(playingId ?? '');
+      }
     } else if (kind == 'playlist.upsert') {
       final old = playlists.where((t) => t['id'] == p['id']).firstOrNull;
       playlists.removeWhere((t) => t['id'] == p['id']);
@@ -1989,14 +2305,15 @@ class AppController extends ChangeNotifier {
         );
       }
     }
-    notifyListeners();
+    if (notify) {
+      notifyListeners();
+    }
   }
 
   Future<void> sync() async {
     if (token == null || url.isEmpty || busy) return;
     busy = true;
     error = null;
-    notifyListeners();
     try {
       while (pending.isNotEmpty) {
         try {
@@ -2016,6 +2333,7 @@ class AppController extends ChangeNotifier {
           }
         }
       }
+      int receivedOperations = 0;
       while (true) {
         final result = await api.request(
           'GET',
@@ -2027,14 +2345,28 @@ class AppController extends ChangeNotifier {
           apply(
             op['kind'] as String,
             Map<String, dynamic>.from(op['payload'] as Map),
+            notify: false,
           );
           cursor = (op['version'] as num).toInt();
+          receivedOperations++;
         }
         await save();
         if (operations.length < 100) break;
       }
+      if (receivedOperations > 0) {
+        notifyListeners();
+        final hasMissing = tracks.any(
+          (t) =>
+              !deletedLocallyIds.contains(t['id']) &&
+              !localFiles.containsKey(t['id']) &&
+              (t['provider'] == 'local' || t['provider'] == 'youtube'),
+        );
+        if (hasMissing) {
+          unawaited(transferNow());
+        }
+      }
     } catch (e) {
-      error = '$e';
+      error = friendlyErrorMessage(e);
     } finally {
       busy = false;
       notifyListeners();

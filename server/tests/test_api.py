@@ -1,4 +1,5 @@
 import uuid
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,6 +9,7 @@ from sqlalchemy.pool import StaticPool
 
 from maboy.app import app
 from maboy.db import Base, get_db
+from maboy.youtube_media import _classify_failure
 
 
 @pytest.fixture
@@ -49,6 +51,67 @@ def test_auth_and_isolation(client):
     assert client.get("/sync/operations", headers=bob).json()["operations"] == []
     assert send(client, bob, "queue.set", {"items": [{"id": str(uuid.uuid4()), "track_id": track_id}]}).status_code == 422
     assert client.get("/sync/operations").status_code == 401
+
+
+def test_track_order_sync_and_account_isolation(client):
+    alice = register(client, "order-owner@example.com")
+    bob = register(client, "order-other@example.com")
+    ids = [str(uuid.uuid4()), str(uuid.uuid4())]
+    for index, track_id in enumerate(ids):
+        assert send(client, alice, "track.upsert", {
+            "id": track_id, "provider": "youtube",
+            "source_id": f"order-video-{index}", "title": f"Track {index}",
+        }).status_code == 200
+    response = send(client, alice, "track.set_order", {"track_ids": ids[::-1]})
+    assert response.status_code == 200, response.text
+    operations = client.get("/sync/operations", headers=alice).json()["operations"]
+    assert operations[-1]["kind"] == "track.set_order"
+    assert operations[-1]["payload"]["track_ids"] == ids[::-1]
+    assert send(client, bob, "track.set_order", {"track_ids": ids}).status_code == 422
+    assert send(client, alice, "track.set_order", {"track_ids": ids * 2}).status_code == 422
+
+
+def test_youtube_audio_is_cached_server_side_and_account_isolated(
+    client, monkeypatch, tmp_path
+):
+    alice = register(client, "youtube-owner@example.com")
+    bob = register(client, "youtube-stranger@example.com")
+    track_id = str(uuid.uuid4())
+    assert send(
+        client,
+        alice,
+        "track.upsert",
+        {
+            "id": track_id,
+            "provider": "youtube",
+            "source_id": "6fCpJGnEJCY",
+            "title": "Song",
+        },
+    ).status_code == 200
+
+    audio_file = tmp_path / "cached.mp3"
+    audio_file.write_bytes(b"ID3" + b"audio" * 2_000)
+    calls = []
+
+    async def fake_download(video_id):
+        calls.append(video_id)
+        return Path(audio_file)
+
+    monkeypatch.setattr("maboy.app.ensure_youtube_audio", fake_download)
+    response = client.get(f"/youtube/tracks/{track_id}/audio", headers=alice)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("audio/mpeg")
+    assert response.content == audio_file.read_bytes()
+    assert calls == ["6fCpJGnEJCY"]
+    assert client.get(
+        f"/youtube/tracks/{track_id}/audio", headers=bob
+    ).status_code == 404
+
+
+def test_server_youtube_cookie_failure_is_actionable():
+    assert _classify_failure(
+        "The provided YouTube account cookies are no longer valid and rotated"
+    ) == "Серверные cookies YouTube устарели"
 
 
 def test_idempotency_and_cursor(client):
@@ -328,3 +391,118 @@ def test_playlist_set_tracks_preserves_exact_set_and_order(client):
     finally:
         session_generator.close()
     assert actual == second_order
+
+
+def test_favorites_sync_and_smart_merge(client):
+    from maboy.models import FavoriteTrack
+    headers = register(client, "favs@example.com")
+
+    # Create two tracks
+    t1_id = str(uuid.uuid4())
+    t2_id = str(uuid.uuid4())
+    for t_id, title in [(t1_id, "Track 1"), (t2_id, "Track 2")]:
+        client.post(
+            "/sync/operations",
+            headers=headers,
+            json={
+                "operation_id": str(uuid.uuid4()),
+                "kind": "track.upsert",
+                "payload": {
+                    "id": t_id,
+                    "title": title,
+                    "artist": "Artist",
+                    "provider": "local",
+                    "source_id": f"src_{t_id}",
+                },
+            },
+        )
+
+    # 1. Device A likes Track 1
+    r1 = client.post(
+        "/sync/operations",
+        headers=headers,
+        json={
+            "operation_id": str(uuid.uuid4()),
+            "kind": "favorites.set",
+            "payload": {"track_ids": [t1_id]},
+        },
+    )
+    assert r1.status_code == 200
+
+    # Verify pull contains [t1_id]
+    pulled = client.get("/sync/operations", headers=headers).json()
+    fav_ops = [op for op in pulled["operations"] if op["kind"] == "favorites.set"]
+    assert fav_ops[-1]["payload"]["track_ids"] == [t1_id]
+
+    # 2. Device B was offline and only had Track 2, sending favorites.set: [t2_id]
+    r2 = client.post(
+        "/sync/operations",
+        headers=headers,
+        json={
+            "operation_id": str(uuid.uuid4()),
+            "kind": "favorites.set",
+            "payload": {"track_ids": [t2_id]},
+        },
+    )
+    assert r2.status_code == 200
+
+    # Server should smart merge: [t1_id, t2_id]
+    pulled = client.get("/sync/operations", headers=headers).json()
+    fav_ops = [op for op in pulled["operations"] if op["kind"] == "favorites.set"]
+    assert fav_ops[-1]["payload"]["track_ids"] == [t1_id, t2_id]
+
+    # Verify FavoriteTrack table in DB
+    session_generator = app.dependency_overrides[get_db]()
+    try:
+        db = next(session_generator)
+        db_tracks = [
+            row.track_id
+            for row in db.query(FavoriteTrack)
+            .order_by(FavoriteTrack.sort_key)
+            .all()
+        ]
+    finally:
+        session_generator.close()
+    assert db_tracks == [t1_id, t2_id]
+
+    # 3. Intentional un-favorite: Device removes t1_id (sends [t2_id])
+    r3 = client.post(
+        "/sync/operations",
+        headers=headers,
+        json={
+            "operation_id": str(uuid.uuid4()),
+            "kind": "favorites.set",
+            "payload": {"track_ids": [t2_id]},
+        },
+    )
+    assert r3.status_code == 200
+    pulled = client.get("/sync/operations", headers=headers).json()
+    fav_ops = [op for op in pulled["operations"] if op["kind"] == "favorites.set"]
+    assert fav_ops[-1]["payload"]["track_ids"] == [t2_id]
+
+    # 4. Stale snapshot protection: client sends empty list while multiple items exist
+    # First add t1_id back
+    client.post(
+        "/sync/operations",
+        headers=headers,
+        json={
+            "operation_id": str(uuid.uuid4()),
+            "kind": "favorites.set",
+            "payload": {"track_ids": [t2_id, t1_id]},
+        },
+    )
+    # Stale client sends [] (missing 2 tracks with no additions)
+    r4 = client.post(
+        "/sync/operations",
+        headers=headers,
+        json={
+            "operation_id": str(uuid.uuid4()),
+            "kind": "favorites.set",
+            "payload": {"track_ids": []},
+        },
+    )
+    assert r4.status_code == 200
+    pulled = client.get("/sync/operations", headers=headers).json()
+    fav_ops = [op for op in pulled["operations"] if op["kind"] == "favorites.set"]
+    # Existing tracks are protected from bulk wipeout
+    assert set(fav_ops[-1]["payload"]["track_ids"]) == {t1_id, t2_id}

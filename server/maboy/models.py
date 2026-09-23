@@ -75,3 +75,12 @@ class QueueItem(Base):
     user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
     track_id: Mapped[str] = mapped_column(ForeignKey("tracks.id"))
     sort_key: Mapped[int] = mapped_column(Integer)
+
+
+class FavoriteTrack(Base):
+    __tablename__ = "favorite_tracks"
+    __table_args__ = (UniqueConstraint("user_id", "track_id"), UniqueConstraint("user_id", "sort_key"))
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=uid)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    track_id: Mapped[str] = mapped_column(ForeignKey("tracks.id"))
+    sort_key: Mapped[int] = mapped_column(Integer)

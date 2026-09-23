@@ -1,6 +1,7 @@
 #include "flutter_window.h"
 
 #include <optional>
+#include <flutter/standard_method_codec.h>
 
 #include "flutter/generated_plugin_registrant.h"
 
@@ -25,6 +26,40 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  window_channel_ =
+      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
+          flutter_controller_->engine()->messenger(), "com.maboy.window",
+          &flutter::StandardMethodCodec::GetInstance());
+  window_channel_->SetMethodCallHandler(
+      [this](const flutter::MethodCall<flutter::EncodableValue>& call,
+             std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+        HWND hwnd = GetHandle();
+        if (!hwnd) {
+          result->Error("window_unavailable", "Windows window is unavailable");
+          return;
+        }
+        const std::string& method = call.method_name();
+        if (method == "startDrag") {
+          ReleaseCapture();
+          if (!PostMessage(hwnd, WM_NCLBUTTONDOWN, HTCAPTION, GetMessagePos())) {
+            result->Error("win32_error", "Could not start window drag");
+            return;
+          }
+        } else if (method == "minimize") {
+          ShowWindow(hwnd, SW_MINIMIZE);
+        } else if (method == "toggleMaximize") {
+          ShowWindow(hwnd, IsZoomed(hwnd) ? SW_RESTORE : SW_MAXIMIZE);
+        } else if (method == "close") {
+          if (!PostMessage(hwnd, WM_CLOSE, 0, 0)) {
+            result->Error("win32_error", "Could not close window");
+            return;
+          }
+        } else {
+          result->NotImplemented();
+          return;
+        }
+        result->Success();
+      });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
@@ -40,6 +75,7 @@ bool FlutterWindow::OnCreate() {
 }
 
 void FlutterWindow::OnDestroy() {
+  window_channel_.reset();
   if (flutter_controller_) {
     flutter_controller_ = nullptr;
   }
