@@ -27,3 +27,4 @@ client/test/failures/
 /maboy-backup-*.zip
 ref/
 ref.txt
+*.md
