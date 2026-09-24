@@ -65,7 +65,7 @@ Future<void> _waitUntil(bool Function() condition, Duration timeout) async {
 Future<File> _writeToneFixture() async {
   const sampleRate = 44100;
   const seconds = 3;
-  const channels = 1;
+  const channels = 2; // stereo: L+R
   const bitsPerSample = 16;
   final sampleCount = sampleRate * seconds;
   final dataSize = sampleCount * channels * (bitsPerSample ~/ 8);
@@ -89,6 +89,7 @@ Future<File> _writeToneFixture() async {
   bytes.setUint16(34, bitsPerSample, Endian.little);
   ascii(36, 'data');
   bytes.setUint32(40, dataSize, Endian.little);
+  // Write interleaved L+R samples (identical tone on both channels).
   for (var sample = 0; sample < sampleCount; sample++) {
     final envelope =
         math.min(1.0, sample / 300.0) *
@@ -96,7 +97,8 @@ Future<File> _writeToneFixture() async {
     final value =
         (math.sin(2 * math.pi * 440 * sample / sampleRate) * 9000 * envelope)
             .round();
-    bytes.setInt16(44 + sample * 2, value, Endian.little);
+    bytes.setInt16(44 + sample * channels * 2, value, Endian.little); // L
+    bytes.setInt16(44 + sample * channels * 2 + 2, value, Endian.little); // R
   }
   final file = File(
     '${Directory.systemTemp.path}${Platform.pathSeparator}maboy-playback-smoke.wav',

@@ -4,6 +4,10 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:mpv_audio_kit/mpv_audio_kit.dart' as mpv;
 
+// Re-export so callers can reference Channels without depending on mpv_audio_kit
+// directly. They use MaboyAudioPlayer.setAudioChannels(mpv.Channels.stereo), etc.
+export 'package:mpv_audio_kit/mpv_audio_kit.dart' show Channels;
+
 enum ProcessingState { idle, loading, ready, completed }
 
 enum LoopMode { off, one }
@@ -60,6 +64,10 @@ class MaboyAudioPlayer {
   List<double> _equalizerGains = List<double>.filled(6, 0);
   bool _unsolicitedPlayBlocked = false;
   bool _disposed = false;
+
+  /// Output channel layout. Defaults to stereo so mono source files are
+  /// always upscaled to L+R instead of staying single-channel.
+  mpv.Channels _audioChannels = mpv.Channels.stereo;
 
   final _playingController = StreamController<bool>.broadcast();
   final _positionController = StreamController<Duration>.broadcast();
@@ -160,6 +168,7 @@ class MaboyAudioPlayer {
     );
     await player.setRate(_speed);
     await _applyEqualizer(player);
+    await _applyChannels(player);
     return player;
   }
 
@@ -335,6 +344,22 @@ class MaboyAudioPlayer {
       (a, b) => a > b ? a : b,
     );
     await player.setVolumeGain(-maximumBoost.clamp(0, 12).toDouble());
+  }
+
+  /// Changes the output channel layout. Defaults to [mpv.Channels.stereo] so
+  /// mono source files are always upscaled to L+R.
+  ///
+  /// Pass [mpv.Channels.mono] to fold both channels into one (useful for
+  /// hearing-aid / single-earbud scenarios). Pass [mpv.Channels.auto] to
+  /// restore mpv's automatic detection.
+  Future<void> setAudioChannels(mpv.Channels channels) async {
+    _audioChannels = channels;
+    final player = _native;
+    if (player != null) await _applyChannels(player);
+  }
+
+  Future<void> _applyChannels(mpv.Player player) async {
+    await player.setAudioChannels(_audioChannels);
   }
 
   Future<void> dispose() async {
