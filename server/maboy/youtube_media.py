@@ -41,11 +41,11 @@ def _classify_failure(stderr: str) -> str:
     message = stderr.lower()
     if "cookies are no longer valid" in message or "likely been rotated" in message:
         return "Серверные cookies YouTube устарели"
-    if "confirm your age" in message or "sign in to confirm" in message:
+    if "confirm your age" in message or "age-restricted" in message or "inappropriate for some users" in message:
         return "Видео 18+: серверу нужны актуальные cookies YouTube"
     if "video unavailable" in message or "this video is unavailable" in message:
         return "Видео недоступно на YouTube"
-    if "captcha" in message or "sign in to confirm" in message or "not a bot" in message:
+    if "captcha" in message or "not a bot" in message:
         return "YouTube запросил проверку, повторите загрузку"
     return "Сервер не смог скачать аудио с YouTube"
 
@@ -201,9 +201,7 @@ async def ensure_youtube_audio(video_id: str) -> Path:
                 )
             )
 
-            args.extend(
-                (
-                    "--no-playlist",
+            returncode, stderr, produced = await _run_yt_dlp(
                 args, cache_dir, temporary_base
             )
             if returncode != 0 or not produced.is_file():
@@ -229,6 +227,7 @@ async def ensure_youtube_audio(video_id: str) -> Path:
                 if (
                     (returncode != 0 or not produced.is_file())
                     and task_cookie is not None
+                    and task_cookie.is_file()
                     and _is_age_restriction(stderr)
                 ):
                     # Default web player still age-gates a logged-in cookie jar.

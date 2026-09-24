@@ -1386,9 +1386,12 @@ class AppController extends ChangeNotifier {
               _throttledProgressNotify();
             },
           );
-          if (!result.isSuccess && result.errorMessage == null) {
+          if (!result.isSuccess &&
+              (result.errorMessage == null || result.isAgeRestricted)) {
             result = YouTubeDownloadResult(
               errorMessage: friendlyErrorMessage(serverError),
+              isAgeRestricted: result.isAgeRestricted,
+              isUnavailable: result.isUnavailable,
             );
           }
         }
