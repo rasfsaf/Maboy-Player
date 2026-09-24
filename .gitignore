@@ -23,7 +23,7 @@ cookies.txt
 server/secrets/
 client/test/failures/
 /maboy-portable-*.zip
-/maboy.zip
+!/maboy.zip
 /maboy-pending-*.zip
 /maboy-backup-*.zip
 ref/

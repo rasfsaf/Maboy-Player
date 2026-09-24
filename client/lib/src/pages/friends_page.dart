@@ -164,107 +164,138 @@ class _FriendsPageState extends State<FriendsPage> {
     );
   }
 
-  Widget _buildProfileHeader(AppController c, String myNick) => MaboyGlassPanel(
-    padding: const EdgeInsets.all(18),
-    child: Row(
-      children: [
-        CircleAvatar(
-          radius: 28,
-          backgroundColor: MaboyColors.primary.withValues(alpha: 0.25),
-          child: Text(
-            myNick.isNotEmpty ? myNick[0].toUpperCase() : '?',
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 24,
-              fontWeight: FontWeight.bold,
+  Widget _buildProfileHeader(AppController c, String myNick) {
+    final avatar = CircleAvatar(
+      radius: 28,
+      backgroundColor: MaboyColors.primary.withValues(alpha: 0.25),
+      child: Text(
+        myNick.isNotEmpty ? myNick[0].toUpperCase() : '?',
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 24,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    );
+    final nickname = Text(
+      '@$myNick',
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: const TextStyle(
+        fontSize: 19,
+        fontWeight: FontWeight.w800,
+        letterSpacing: 0.2,
+      ),
+    );
+    final nicknameBadge = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+      decoration: BoxDecoration(
+        color: MaboyColors.surfaceHigh,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: const Text(
+        'Ваш ник',
+        style: TextStyle(fontSize: 11, color: MaboyColors.textMuted),
+      ),
+    );
+    final email = Text(
+      c.userEmail ?? 'Локальный режим (без аккаунта)',
+      style: const TextStyle(fontSize: 12, color: MaboyColors.textMuted),
+    );
+    final gatewayBadge = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: (c.token != null)
+            ? Colors.green.withValues(alpha: 0.15)
+            : Colors.amber.withValues(alpha: 0.15),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: (c.token != null)
+              ? Colors.green.withValues(alpha: 0.6)
+              : Colors.amber.withValues(alpha: 0.6),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 7,
+            height: 7,
+            decoration: BoxDecoration(
+              color: (c.token != null) ? Colors.green : Colors.amber,
+              shape: BoxShape.circle,
             ),
           ),
-        ),
-        const SizedBox(width: 16),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Text(
-                    '@$myNick',
-                    style: const TextStyle(
-                      fontSize: 19,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.2,
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 2,
-                    ),
-                    decoration: BoxDecoration(
-                      color: MaboyColors.surfaceHigh,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: const Text(
-                      'Ваш ник',
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: MaboyColors.textMuted,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 4),
-              Text(
-                c.userEmail ?? 'Локальный режим (без аккаунта)',
-                style: const TextStyle(
-                  fontSize: 12,
-                  color: MaboyColors.textMuted,
-                ),
-              ),
-            ],
-          ),
-        ),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-          decoration: BoxDecoration(
-            color: (c.token != null)
-                ? Colors.green.withValues(alpha: 0.15)
-                : Colors.amber.withValues(alpha: 0.15),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: (c.token != null)
-                  ? Colors.green.withValues(alpha: 0.6)
-                  : Colors.amber.withValues(alpha: 0.6),
+          const SizedBox(width: 6),
+          Text(
+            c.token != null ? 'Шлюз активен' : 'Локальный шлюз',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: c.token != null ? Colors.greenAccent : Colors.amberAccent,
             ),
           ),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
+        ],
+      ),
+    );
+
+    return MaboyGlassPanel(
+      padding: const EdgeInsets.all(18),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // Reserve the full card width for the email on phones.
+          if (constraints.maxWidth < 500) {
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    avatar,
+                    const SizedBox(width: 16),
+                    Expanded(child: nickname),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                email,
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  children: [nicknameBadge, gatewayBadge],
+                ),
+              ],
+            );
+          }
+
+          return Row(
             children: [
-              Container(
-                width: 7,
-                height: 7,
-                decoration: BoxDecoration(
-                  color: (c.token != null) ? Colors.green : Colors.amber,
-                  shape: BoxShape.circle,
+              avatar,
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Flexible(child: nickname),
+                        const SizedBox(width: 8),
+                        nicknameBadge,
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    email,
+                  ],
                 ),
               ),
-              const SizedBox(width: 6),
-              Text(
-                c.token != null ? 'Шлюз активен' : 'Локальный шлюз',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: c.token != null ? Colors.greenAccent : Colors.amberAccent,
-                ),
-              ),
+              const SizedBox(width: 12),
+              gatewayBadge,
             ],
-          ),
-        ),
-      ],
-    ),
-  );
+          );
+        },
+      ),
+    );
+  }
 
   Widget _buildSearchCard(
     String trimmedSearch,
@@ -825,7 +856,11 @@ class _FriendsPageState extends State<FriendsPage> {
                           size: 38,
                           radius: 5,
                         ),
-                        title: MarqueeText('${track['title'] ?? 'Трек'}'),
+                        title: Text(
+                          '${track['title'] ?? 'Трек'}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                         subtitle: Text(
                           '${track['artist'] ?? 'Неизвестный исполнитель'}',
                           maxLines: 1,

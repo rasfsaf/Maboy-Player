@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../app_controller.dart';
 import '../design_system.dart';
+import '../services/track_formatter.dart';
 import 'marquee_text.dart';
 
 class _TrackActionsMenu extends StatelessWidget {
@@ -172,7 +173,7 @@ class TrackCover extends StatelessWidget {
     final thumbUrl = track['thumbnail_url'] as String?;
 
     Widget content;
-    if (localArt != null && File(localArt).existsSync()) {
+    if (localArt != null && localArt.isNotEmpty) {
       content = Image.file(
         File(localArt),
         width: size,
@@ -298,8 +299,14 @@ class TrackTile extends StatelessWidget {
       );
     }
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
+    final formatted = TrackFormatter.split(
+      rawTitle: '${track['title'] ?? ''}',
+      rawArtist: track['artist'] as String?,
+    );
+
+    return RepaintBoundary(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
       child: Material(
         color: MaboyColors.surface.withValues(alpha: 0.48),
         shape: RoundedRectangleBorder(
@@ -315,14 +322,14 @@ class TrackTile extends StatelessWidget {
               Expanded(
                 child: isPlaying
                     ? MarqueeText(
-                        '${track['title']}',
+                        formatted.title,
                         style: TextStyle(
                           color: Theme.of(context).colorScheme.primary,
                           fontWeight: FontWeight.w800,
                         ),
                       )
                     : Text(
-                        '${track['title']}',
+                        formatted.title,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(fontWeight: FontWeight.w600),
@@ -353,8 +360,9 @@ class TrackTile extends StatelessWidget {
               Expanded(
                 child: Text(
                   [
-                    track['artist'],
+                    formatted.artist.isNotEmpty ? formatted.artist : track['artist'],
                     if (track['album'] != null &&
+                        track['album'] != formatted.artist &&
                         track['album'] != track['artist'])
                       track['album'],
                     locationStatus,
@@ -464,6 +472,7 @@ class TrackTile extends StatelessWidget {
                 ),
         ),
       ),
-    );
-  }
+    ),
+  );
+}
 }

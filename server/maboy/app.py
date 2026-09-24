@@ -16,7 +16,8 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from .db import Base, engine, get_db, SessionLocal
-from .models import FavoriteTrack, Operation, Playlist, PlaylistTrack, QueueItem, Token, Track, User
+from . import friends as friends_api
+from .models import FavoriteTrack, Operation, Playlist, PlaylistTrack, QueueItem, Token, Track, TrackShare, User
 from .youtube_media import YouTubeDownloadError, ensure_youtube_audio
 
 # In-memory routing only: audio bytes are never persisted on the gateway.
@@ -41,6 +42,18 @@ async def prefetch_youtube_audio(source_id: str):
 async def lifespan(app: FastAPI):
     # MVP bootstrap; replace with versioned migrations before changing a deployed schema.
     Base.metadata.create_all(engine)
+    with engine.begin() as connection:
+        if connection.dialect.name == "sqlite":
+            names = {row[1] for row in connection.exec_driver_sql("PRAGMA table_info(users)")}
+            if "nickname" not in names:
+                connection.exec_driver_sql("ALTER TABLE users ADD COLUMN nickname VARCHAR(40)")
+        else:
+            connection.exec_driver_sql(
+                "ALTER TABLE users ADD COLUMN IF NOT EXISTS nickname VARCHAR(40)"
+            )
+        connection.exec_driver_sql(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ix_users_nickname ON users (nickname)"
+        )
     with SessionLocal() as db:
         fav_count = db.scalar(select(func.count(FavoriteTrack.id)))
         if fav_count == 0:
@@ -121,9 +134,19 @@ def relay_identity(db: Session, token: str, track_id: str) -> tuple[str, str] | 
         track = db.get(Track, str(uuid.UUID(track_id)))
     except ValueError:
         return None
-    if track is None or track.user_id != credential.user_id or track.provider not in ("local", "youtube"):
+    if track is None or track.provider not in ("local", "youtube"):
         return None
-    return credential.user_id, track.id
+    if track.user_id == credential.user_id:
+        return track.user_id, track.id
+    share = db.scalar(select(TrackShare).where(
+        TrackShare.status == "accepted",
+        TrackShare.source_track_id == track.id,
+        TrackShare.from_user_id == track.user_id,
+        TrackShare.to_user_id == credential.user_id,
+    ))
+    if share is None:
+        return None
+    return track.user_id, track.id
 
 
 def websocket_user(db: Session, token: str) -> User | None:
@@ -606,3 +629,43 @@ async def youtube_audio(
         media_type="audio/mpeg",
         filename=f"{track.id}.mp3",
     )
+
+
+@app.put("/account/nickname")
+def set_nickname(body: friends_api.NicknameIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return friends_api.set_nickname(db, user, body.nickname)
+
+
+@app.get("/friends")
+def list_friends(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return friends_api.snapshot(db, user)
+
+
+@app.post("/friends/requests", status_code=201)
+def request_friend(body: friends_api.NicknameIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return friends_api.request_friend(db, user, body.nickname)
+
+
+@app.post("/friends/requests/{request_id}/accept")
+def accept_friend(request_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return friends_api.accept_request(db, user, request_id)
+
+
+@app.post("/friends/{nickname}/shares", status_code=201)
+def share_track(nickname: str, body: friends_api.ShareIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return friends_api.share_track(db, user, nickname, body.track_id)
+
+
+@app.post("/friends/shares/{share_id}/accept")
+def accept_share(share_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return friends_api.accept_share(db, user, share_id)
+
+
+@app.get("/friends/shares/{share_id}/file")
+def shared_file(share_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    track_id = friends_api.shared_file(db, user, share_id)
+    path = audio_path(track_id)
+    if not path.is_file():
+        raise HTTPException(404, "file_not_uploaded")
+    return FileResponse(path, media_type="audio/mpeg", filename=f"{track_id}.mp3")
+

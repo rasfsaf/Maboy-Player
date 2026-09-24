@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:audio_metadata_reader/audio_metadata_reader.dart';
+import 'track_formatter.dart';
 
 class ParsedTrackMetadata {
   ParsedTrackMetadata({
@@ -55,17 +56,23 @@ class LocalMetadataService {
         } catch (_) {}
       }
 
+      final formatted = TrackFormatter.split(
+        rawTitle: title,
+        rawArtist: artist,
+      );
+
       return ParsedTrackMetadata(
-        title: title,
-        artist: artist,
+        title: formatted.title,
+        artist: formatted.artist,
         album: album,
         durationMs: durationMs,
         artworkPath: savedArtPath,
       );
     } catch (_) {
+      final fallbackFormatted = TrackFormatter.split(rawTitle: safeFallbackTitle);
       return ParsedTrackMetadata(
-        title: safeFallbackTitle,
-        artist: null,
+        title: fallbackFormatted.title,
+        artist: fallbackFormatted.artist,
         album: null,
         durationMs: null,
         artworkPath: null,

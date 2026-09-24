@@ -10,6 +10,7 @@ import 'pages/playlist_detail_page.dart';
 import 'pages/secondary_pages.dart';
 import 'widgets/marquee_text.dart';
 import 'widgets/player_sheet.dart';
+import 'widgets/storage_settings_dialog.dart';
 import 'widgets/track_tile.dart';
 
 class HomePage extends StatefulWidget {
@@ -365,6 +366,8 @@ class _HomePageState extends State<HomePage> {
                         c.transferNow();
                       } else if (action == 'transfer') {
                         c.transferNow();
+                      } else if (action == 'storage') {
+                        showStorageSettingsDialog(context, c);
                       } else if (action == 'logout') {
                         c.signOut();
                       }
@@ -438,6 +441,16 @@ class _HomePageState extends State<HomePage> {
                             Icon(Icons.swap_horiz),
                             SizedBox(width: 12),
                             Text('Пробросить файлы'),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'storage',
+                        child: Row(
+                          children: [
+                            Icon(Icons.sd_card),
+                            SizedBox(width: 12),
+                            Text('Хранилище музыки'),
                           ],
                         ),
                       ),

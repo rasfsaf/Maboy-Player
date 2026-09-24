@@ -17,6 +17,8 @@ import 'services/local_metadata_service.dart';
 import 'services/media_service.dart';
 import 'services/friends_service.dart';
 import 'services/playback_manager.dart';
+import 'services/storage_service.dart';
+import 'services/track_formatter.dart';
 import 'services/youtube_downloader.dart';
 import 'services/youtube_playlist_service.dart';
 
@@ -161,7 +163,10 @@ class AppController extends ChangeNotifier {
 
   SyncApi get api => SyncApi(url, token);
 
-  AppController() {
+  final StorageService storageService;
+
+  AppController({StorageService? storageService})
+      : storageService = storageService ?? StorageService() {
     friendsService = FriendsService(
       getCurrentAccount: () => userEmail,
       onTrackAccepted: (track) async {
@@ -809,30 +814,31 @@ class AppController extends ChangeNotifier {
       }
     }
 
-    // Auto-discover audio files in application documents music folder
+    // Auto-discover audio files in application music folders (internal & SD-card)
     try {
-      final docDir = await getApplicationDocumentsDirectory();
-      final musicDir = Directory('${docDir.path}/music');
-      if (await musicDir.exists()) {
-        await for (final entity in musicDir.list(
-          recursive: true,
-          followLinks: false,
-        )) {
-          if (entity is File && _isAudio(entity.path)) {
-            final fileName = entity.uri.pathSegments.last;
-            for (final track in tracks) {
-              final tid = track['id'] as String;
-              if (!deletedLocallyIds.contains(tid) &&
-                  !localFiles.containsKey(tid) &&
-                  (fileName.startsWith(tid) || fileName.contains(tid))) {
-                localFiles[tid] = entity.path;
+      final musicDirs = await storageService.getAllMusicDirectories();
+      for (final musicDir in musicDirs) {
+        if (await musicDir.exists()) {
+          await for (final entity in musicDir.list(
+            recursive: true,
+            followLinks: false,
+          )) {
+            if (entity is File && _isAudio(entity.path)) {
+              final fileName = entity.uri.pathSegments.last;
+              for (final track in tracks) {
+                final tid = track['id'] as String;
+                if (!deletedLocallyIds.contains(tid) &&
+                    !localFiles.containsKey(tid) &&
+                    (fileName.startsWith(tid) || fileName.contains(tid))) {
+                  localFiles[tid] = entity.path;
+                }
               }
             }
           }
         }
       }
     } catch (e) {
-      debugPrint('Error discovering files in music directory: $e');
+      debugPrint('Error discovering files in music directories: $e');
     }
 
     // Check legacy application directory on Android if applicable
@@ -942,9 +948,6 @@ class AppController extends ChangeNotifier {
   Future<void> _receiveSingleAttempt(Map<String, dynamic> track) async {
     final id = track['id'] as String;
     if (deletedLocallyIds.contains(id) || localFiles.containsKey(id)) return;
-    final docDir = await getApplicationDocumentsDirectory();
-
-    // Check if this track belongs to a playlist/folder
     final playlist = playlists
         .where((p) => (p['track_ids'] as List?)?.contains(id) == true)
         .firstOrNull;
@@ -954,12 +957,9 @@ class AppController extends ChangeNotifier {
               .trim()
         : null;
 
-    final directory = Directory(
-      folderName != null && folderName.isNotEmpty
-          ? '${docDir.path}/music/$folderName'
-          : '${docDir.path}/music',
+    final directory = await storageService.getTargetMusicDirectory(
+      subFolder: folderName,
     );
-    await directory.create(recursive: true);
 
     final target = File('${directory.path}/$id.mp3');
     // Relay and local YouTube fallback must never write the same .part file.
@@ -1192,12 +1192,16 @@ class AppController extends ChangeNotifier {
         trackId = existingTrack['id'] as String;
       } else {
         trackId = newId();
+        final formatted = TrackFormatter.split(
+          rawTitle: video.title,
+          rawArtist: video.author,
+        );
         final payload = {
           'id': trackId,
           'provider': 'youtube',
           'source_id': videoId,
-          'title': video.title,
-          'artist': video.author,
+          'title': formatted.title,
+          'artist': formatted.artist,
           'thumbnail_url': video.thumbnailUrl,
           'duration_ms': video.duration?.inMilliseconds,
           'added_at': DateTime.now().toUtc().toIso8601String(),
@@ -1250,16 +1254,20 @@ class AppController extends ChangeNotifier {
 
     final meta = await ytService.getMetadata(videoId);
     final id = newId();
-    final title = (customTitle != null && customTitle.trim().isNotEmpty)
+    final rawTitle = (customTitle != null && customTitle.trim().isNotEmpty)
         ? customTitle.trim()
         : (meta?.title ?? 'YouTube Audio');
-    final artist = meta?.author ?? 'YouTube';
+    final rawArtist = meta?.author ?? 'YouTube';
+    final formatted = TrackFormatter.split(
+      rawTitle: rawTitle,
+      rawArtist: rawArtist,
+    );
     final payload = {
       'id': id,
       'provider': 'youtube',
       'source_id': videoId,
-      'title': title,
-      'artist': artist,
+      'title': formatted.title,
+      'artist': formatted.artist,
       'thumbnail_url': meta?.thumbnailUrl,
       'duration_ms': meta?.duration?.inMilliseconds,
       'added_at': DateTime.now().toUtc().toIso8601String(),
@@ -1299,12 +1307,10 @@ class AppController extends ChangeNotifier {
     notifyListeners();
 
     try {
-      final docDir = await getApplicationDocumentsDirectory();
-      final musicDir = Directory('${docDir.path}/music');
-      await musicDir.create(recursive: true);
-
+      final musicDir = await storageService.getTargetMusicDirectory();
       final outMp3Path = '${musicDir.path}/$id.mp3';
-      final existingFile = File(outMp3Path);
+      final existingFile =
+          await storageService.findExistingTrackFile(id) ?? File(outMp3Path);
       if (!deletedLocallyIds.contains(id) &&
           await existingFile.exists() &&
           await existingFile.length() > 5000) {
@@ -1458,9 +1464,7 @@ class AppController extends ChangeNotifier {
 
     final ids = <String>[];
     final operations = <Map<String, dynamic>>[];
-    final docDir = await getApplicationDocumentsDirectory();
-    final directory = Directory('${docDir.path}/music');
-    await directory.create(recursive: true);
+    final directory = await storageService.getTargetMusicDirectory();
 
     for (final path in paths) {
       final id = newId();
@@ -1560,11 +1564,7 @@ class AppController extends ChangeNotifier {
         return;
       }
 
-      final docDir = await getApplicationDocumentsDirectory();
-      final musicDir = Directory('${docDir.path}/music');
-      if (!await musicDir.exists()) {
-        await musicDir.create(recursive: true);
-      }
+      final musicDir = await storageService.getTargetMusicDirectory();
 
       int newTracksCount = 0;
       final newOperations = <Map<String, dynamic>>[];
@@ -1687,22 +1687,10 @@ class AppController extends ChangeNotifier {
   Future<String?> _findLocalFileForTrack(Map<String, dynamic> track) async {
     final id = track['id'] as String;
     try {
-      final docDir = await getApplicationDocumentsDirectory();
-      final musicDir = Directory('${docDir.path}/music');
-
-      // 1. Exact ID check in application music directory (including playlist subfolders)
-      if (await musicDir.exists()) {
-        await for (final file in musicDir.list(
-          recursive: true,
-          followLinks: false,
-        )) {
-          if (file is File && _isAudio(file.path)) {
-            final fileName = file.uri.pathSegments.last;
-            if (fileName.startsWith(id) || fileName.contains(id)) {
-              return file.path;
-            }
-          }
-        }
+      // 1. Exact ID check across all music directories (internal & SD-card)
+      final existing = await storageService.findExistingTrackFile(id);
+      if (existing != null) {
+        return existing.path;
       }
 
       // 2. Strict external file matching: requires non-empty artist, non-empty title, and duration match
@@ -2101,18 +2089,10 @@ class AppController extends ChangeNotifier {
       }
     }
     notifyListeners();
-    final docDir = await getApplicationDocumentsDirectory();
-    final appMusicPrefix =
-        '${docDir.path}${Platform.pathSeparator}music${Platform.pathSeparator}';
     for (final id in trackIds) {
       final path = localFiles.remove(id);
       if (path != null) {
-        final normalizedPath = Platform.isWindows ? path.toLowerCase() : path;
-        final normalizedPrefix = Platform.isWindows
-            ? appMusicPrefix.toLowerCase()
-            : appMusicPrefix;
-        final appOwned =
-            normalizedPath.startsWith(normalizedPrefix) &&
+        final appOwned = await storageService.isAppOwnedPath(path) &&
             File(path).uri.pathSegments.last.startsWith(id);
         // Older installations have no origin marker. Preserve any file that
         // is not an app-owned copy and remember it for future restores.
@@ -2373,6 +2353,7 @@ class AppController extends ChangeNotifier {
   Future<void> load() async {
     await _loadDevice();
     await friendsService.load();
+    await storageService.init();
     final prefs = await SharedPreferences.getInstance();
     url = backendUrl;
     account = prefs.getString('account');

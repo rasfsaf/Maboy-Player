@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../app_controller.dart';
 import '../design_system.dart';
 import '../pages/equalizer_page.dart';
+import '../services/track_formatter.dart';
 import 'marquee_text.dart';
 import 'track_tile.dart';
 
@@ -115,12 +116,13 @@ class MiniPlayer extends StatelessWidget {
       MaterialPageRoute(builder: (_) => PlayerPage(controller: controller)),
     );
 
-    return SizedBox(
-      height: desktop ? 90 : null,
-      child: MaboyGlassPanel(
-        radius: desktop ? 0 : 16,
-        opacity: 0.86,
-        child: desktop
+    return RepaintBoundary(
+      child: SizedBox(
+        height: desktop ? 90 : null,
+        child: MaboyGlassPanel(
+          radius: desktop ? 0 : 16,
+          opacity: 0.86,
+          child: desktop
             ? Padding(
                 padding: const EdgeInsets.symmetric(
                   horizontal: 18,
@@ -224,6 +226,7 @@ class MiniPlayer extends StatelessWidget {
                   ),
                 ],
               ),
+        ),
       ),
     );
   }
@@ -268,7 +271,8 @@ class _GlowingQueueButtonState extends State<_GlowingQueueButton>
 
   @override
   Widget build(BuildContext context) {
-    return AnimatedBuilder(
+    return RepaintBoundary(
+      child: AnimatedBuilder(
       animation: _glowAnimation,
       builder: (context, _) {
         final glowFactor = _isHovered ? 1.0 : _glowAnimation.value;
@@ -346,8 +350,9 @@ class _GlowingQueueButtonState extends State<_GlowingQueueButton>
           ),
         );
       },
-    );
-  }
+    ),
+  );
+}
 }
 
 class _MiniTrackDetails extends StatelessWidget {
@@ -356,21 +361,31 @@ class _MiniTrackDetails extends StatelessWidget {
   final Map<String, dynamic> track;
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      MarqueeText(
-        '${track['title']}',
-        style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
-      ),
-      const SizedBox(height: 2),
-      MarqueeText(
-        '${track['artist'] ?? 'Неизвестный исполнитель'}',
-        style: const TextStyle(fontSize: 12, color: MaboyColors.textMuted),
-      ),
-    ],
-  );
+  Widget build(BuildContext context) {
+    final formatted = TrackFormatter.split(
+      rawTitle: '${track['title'] ?? ''}',
+      rawArtist: track['artist'] as String?,
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        MarqueeText(
+          formatted.title,
+          style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          formatted.artist.isNotEmpty
+              ? formatted.artist
+              : '${track['artist'] ?? 'Неизвестный исполнитель'}',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(fontSize: 12, color: MaboyColors.textMuted),
+        ),
+      ],
+    );
+  }
 }
 
 class PlayerPage extends StatelessWidget {
@@ -443,6 +458,11 @@ class PlayerSheet extends StatelessWidget {
     final id = track['id'] as String;
     final isFav = controller.isFavorite(id);
 
+    final formatted = TrackFormatter.split(
+      rawTitle: '${track['title'] ?? ''}',
+      rawArtist: track['artist'] as String?,
+    );
+
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
@@ -453,7 +473,7 @@ class PlayerSheet extends StatelessWidget {
         ),
         const SizedBox(height: 18),
         Text(
-          '${track['title']}',
+          formatted.title,
           textAlign: TextAlign.center,
           maxLines: 2,
           overflow: TextOverflow.ellipsis,
@@ -463,7 +483,9 @@ class PlayerSheet extends StatelessWidget {
         ),
         const SizedBox(height: 4),
         Text(
-          '${track['artist'] ?? 'Неизвестный исполнитель'}',
+          formatted.artist.isNotEmpty
+              ? formatted.artist
+              : '${track['artist'] ?? 'Неизвестный исполнитель'}',
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
           style: const TextStyle(color: MaboyColors.textMuted),
@@ -703,9 +725,10 @@ class _DecorativeProgressCover extends StatelessWidget {
         final fraction = durationMs > 0
             ? (positionMs / durationMs).clamp(0.0, 1.0)
             : 0.0;
-        return IgnorePointer(
-          key: const Key('decorativePlaybackRing'),
-          child: ExcludeSemantics(
+        return RepaintBoundary(
+          child: IgnorePointer(
+            key: const Key('decorativePlaybackRing'),
+            child: ExcludeSemantics(
             child: SizedBox.square(
               dimension: size + 28,
               child: Stack(
@@ -747,8 +770,9 @@ class _DecorativeProgressCover extends StatelessWidget {
               ),
             ),
           ),
-        );
-      },
+        ),
+      );
+    },
     ),
   );
 }
@@ -831,65 +855,80 @@ class _PlaybackQueue extends StatelessWidget {
               .firstOrNull;
           final isCurrent =
               current != null && current.track['id'] == item['track_id'];
+          final formatted = TrackFormatter.split(
+            rawTitle: '${track?['title'] ?? 'Трек'}',
+            rawArtist: track?['artist'] as String?,
+          );
 
           return ReorderableDelayedDragStartListener(
             key: ValueKey(item['id']),
             index: index,
-            child: ListTile(
-              contentPadding: const EdgeInsets.symmetric(
-                horizontal: 4,
-                vertical: 2,
-              ),
-              leading: TrackCover(
-                controller: controller,
-                track: track ?? const {},
-                size: 46,
-                radius: 5,
-              ),
-              title: MarqueeText(
-                '${track?['title'] ?? 'Трек'}',
-                style: TextStyle(
-                  color: isCurrent ? MaboyColors.primary : null,
-                  fontWeight: isCurrent ? FontWeight.bold : FontWeight.w600,
+            child: RepaintBoundary(
+              child: ListTile(
+                contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 4,
+                  vertical: 2,
                 ),
-              ),
-              subtitle: Text(
-                isCurrent
-                    ? 'Сейчас играет'
-                    : '${track?['artist'] ?? 'Неизвестный исполнитель'}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(color: MaboyColors.textMuted),
-              ),
-              onTap: () => controller.playQueueItem(item),
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  IconButton(
-                    tooltip: 'Убрать из очереди',
-                    icon: const Icon(Icons.close, size: 20),
-                    onPressed: () => controller.setDeviceQueue(
-                      deviceQueue.where((q) => q['id'] != item['id']),
-                    ),
-                  ),
-                  ReorderableDragStartListener(
-                    index: index,
-                    child: const MouseRegion(
-                      cursor: SystemMouseCursors.grab,
-                      child: Padding(
-                        padding: EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 8,
+                leading: TrackCover(
+                  controller: controller,
+                  track: track ?? const {},
+                  size: 46,
+                  radius: 5,
+                ),
+                title: isCurrent
+                    ? MarqueeText(
+                        formatted.title,
+                        style: const TextStyle(
+                          color: MaboyColors.primary,
+                          fontWeight: FontWeight.bold,
                         ),
-                        child: Icon(
-                          Icons.drag_indicator,
-                          size: 20,
-                          color: MaboyColors.textMuted,
+                      )
+                    : Text(
+                        formatted.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                subtitle: Text(
+                  isCurrent
+                      ? 'Сейчас играет'
+                      : (formatted.artist.isNotEmpty
+                          ? formatted.artist
+                          : '${track?['artist'] ?? 'Неизвестный исполнитель'}'),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: MaboyColors.textMuted),
+                ),
+                onTap: () => controller.playQueueItem(item),
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    IconButton(
+                      tooltip: 'Убрать из очереди',
+                      icon: const Icon(Icons.close, size: 20),
+                      onPressed: () => controller.setDeviceQueue(
+                        deviceQueue.where((q) => q['id'] != item['id']),
+                      ),
+                    ),
+                    ReorderableDragStartListener(
+                      index: index,
+                      child: const MouseRegion(
+                        cursor: SystemMouseCursors.grab,
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 8,
+                          ),
+                          child: Icon(
+                            Icons.drag_indicator,
+                            size: 20,
+                            color: MaboyColors.textMuted,
+                          ),
                         ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
           );
@@ -1052,6 +1091,10 @@ class _PlaybackQueueTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final track = entry.track;
+    final formatted = TrackFormatter.split(
+      rawTitle: '${track['title'] ?? ''}',
+      rawArtist: track['artist'] as String?,
+    );
     final tile = ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
       leading: TrackCover(
@@ -1060,17 +1103,26 @@ class _PlaybackQueueTile extends StatelessWidget {
         size: 46,
         radius: 5,
       ),
-      title: MarqueeText(
-        '${track['title']}',
-        style: TextStyle(
-          color: current ? MaboyColors.primary : null,
-          fontWeight: current ? FontWeight.bold : FontWeight.w600,
-        ),
-      ),
+      title: current
+          ? MarqueeText(
+              formatted.title,
+              style: const TextStyle(
+                color: MaboyColors.primary,
+                fontWeight: FontWeight.bold,
+              ),
+            )
+          : Text(
+              formatted.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
       subtitle: Text(
         current
             ? 'Сейчас играет'
-            : '${track['artist'] ?? 'Неизвестный исполнитель'}',
+            : (formatted.artist.isNotEmpty
+                ? formatted.artist
+                : '${track['artist'] ?? 'Неизвестный исполнитель'}'),
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: const TextStyle(color: MaboyColors.textMuted),
@@ -1108,11 +1160,12 @@ class _PlaybackQueueTile extends StatelessWidget {
               ],
             ),
     );
+    final wrappedTile = RepaintBoundary(child: tile);
     return reorderIndex == null
-        ? tile
+        ? wrappedTile
         : ReorderableDelayedDragStartListener(
             index: reorderIndex!,
-            child: tile,
+            child: wrappedTile,
           );
   }
 }

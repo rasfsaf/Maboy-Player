@@ -154,6 +154,9 @@ class MainActivity : FlutterActivity() {
                 "getDefaultAudioDirs" -> {
                     result.success(getDefaultAudioDirs())
                 }
+                "getStorageVolumes" -> {
+                    result.success(getStorageVolumes())
+                }
                 else -> result.notImplemented()
             }
         }
@@ -275,6 +278,35 @@ class MainActivity : FlutterActivity() {
             e.printStackTrace()
         }
         return dirs
+    }
+
+    private fun getStorageVolumes(): List<Map<String, Any?>> {
+        val volumes = mutableListOf<Map<String, Any?>>()
+        try {
+            val dirs = getExternalFilesDirs(Environment.DIRECTORY_MUSIC)
+            for (dir in dirs) {
+                if (dir != null) {
+                    val state = Environment.getExternalStorageState(dir)
+                    if (state == Environment.MEDIA_MOUNTED) {
+                        val isRemovable = Environment.isExternalStorageRemovable(dir)
+                        val freeBytes = dir.usableSpace
+                        val totalBytes = dir.totalSpace
+                        volumes.add(
+                            mapOf(
+                                "path" to dir.absolutePath,
+                                "isRemovable" to isRemovable,
+                                "freeBytes" to freeBytes,
+                                "totalBytes" to totalBytes,
+                                "name" to if (isRemovable) "SD-карта" else "Внутренняя память"
+                            )
+                        )
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            Log.w("maboy", "Error querying storage volumes", e)
+        }
+        return volumes
     }
 
     private fun handleIntent(intent: Intent?) {
