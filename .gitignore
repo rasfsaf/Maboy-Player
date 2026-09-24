@@ -9,10 +9,11 @@ __pycache__/
 .env
 client/.dart_tool/
 client/build/
+client/android/build/
 client/android/key.properties
 client/android/app/*.jks
 client/.flutter-plugins-dependencies
-/maboy.apk
+*.apk
 /maboy.exe
 /*.dll
 /data/
