@@ -6,6 +6,9 @@ import shutil
 import uuid
 from pathlib import Path
 
+from .captcha_solver import solve_recaptcha
+
+
 logger = logging.getLogger(__name__)
 
 _VIDEO_ID = re.compile(r"^[A-Za-z0-9_-]{11}$")
@@ -41,6 +44,8 @@ def _classify_failure(stderr: str) -> str:
         return "Видео 18+: серверу нужны актуальные cookies YouTube"
     if "video unavailable" in message or "this video is unavailable" in message:
         return "Видео недоступно на YouTube"
+    if "captcha" in message or "sign in to confirm" in message or "not a bot" in message:
+        return "YouTube запросил проверку, повторите загрузку"
     return "Сервер не смог скачать аудио с YouTube"
 
 
@@ -137,10 +142,12 @@ async def ensure_youtube_audio(video_id: str) -> Path:
                 )
             )
 
+            env = os.environ.copy()
             process = await asyncio.create_subprocess_exec(
                 *args,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                env=env,
             )
             try:
                 _, stderr_bytes = await asyncio.wait_for(
@@ -161,6 +168,26 @@ async def ensure_youtube_audio(video_id: str) -> Path:
                 logger.warning(
                     "yt-dlp failed for %s: %s", video_id, stderr[-2_000:]
                 )
+                lowered = stderr.lower()
+                if "captcha" in lowered or "not a bot" in lowered:
+                    token = await asyncio.to_thread(
+                        solve_recaptcha, "https://www.youtube.com/watch", video_id, 30
+                    )
+                    if token:
+                        retry_env = os.environ.copy()
+                        retry_env["YTDLP_CAPTCHA_TOKEN"] = token
+                        retry = await asyncio.create_subprocess_exec(
+                            *args,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            env=retry_env,
+                        )
+                        await retry.communicate()
+                        if retry.returncode == 0 and produced.is_file():
+                            produced.replace(target)
+                            await _promote_cookie_copy(task_cookie, cache_dir)
+                            _prune_cache(cache_dir, protected=target)
+                            return target
                 for leftover in cache_dir.glob(f"{temporary_base.name}.*"):
                     leftover.unlink(missing_ok=True)
                 raise YouTubeDownloadError(_classify_failure(stderr))

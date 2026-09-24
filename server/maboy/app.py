@@ -315,7 +315,7 @@ async def relay_receive(ws: WebSocket, track_id: str, token: str, device: str = 
     try:
         while True:
             try:
-                await asyncio.wait_for(sender_available.setdefault(key, asyncio.Event()).wait(), timeout=10.0)
+                await asyncio.wait_for(sender_available.setdefault(key, asyncio.Event()).wait(), timeout=30.0)
             except asyncio.TimeoutError:
                 try:
                     await ws.send_text("retry")

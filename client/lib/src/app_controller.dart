@@ -15,7 +15,9 @@ import 'services/bounded_task_pool.dart';
 import 'services/device_music_service.dart';
 import 'services/local_metadata_service.dart';
 import 'services/media_service.dart';
+import 'services/captcha_solver_service.dart';
 import 'services/friends_service.dart';
+import 'services/p2p_sync_service.dart';
 import 'services/playback_manager.dart';
 import 'services/storage_service.dart';
 import 'services/track_formatter.dart';
@@ -54,6 +56,8 @@ class AppController extends ChangeNotifier {
 
   final MaboyAudioPlayer player = MaboyAudioPlayer();
   final YouTubeDownloadService ytService = YouTubeDownloadService();
+  final CaptchaSolverService captchaSolver = CaptchaSolverService();
+  final P2pSyncService p2pSync = const P2pSyncService();
   final YouTubePlaylistService ytPlaylistService = YouTubePlaylistService();
   late final PlaybackManager playbackManager;
   final Map<String, String> localFiles = {};
@@ -221,6 +225,13 @@ class AppController extends ChangeNotifier {
 
     _playerSubscriptions.add(
       player.playerStateStream.listen((state) {
+        if (state.processingState == ProcessingState.loading ||
+            state.processingState == ProcessingState.ready ||
+            state.processingState == ProcessingState.completed) {
+          if (transferStatus.startsWith('Подключение к потоку YouTube')) {
+            transferStatus = '';
+          }
+        }
         if (state.processingState == ProcessingState.completed) {
           playbackManager.onTrackCompleted();
           if (playbackManager.repeatMode == RepeatMode.one) {
@@ -1302,6 +1313,14 @@ class AppController extends ChangeNotifier {
     final id = track['id'] as String;
     if (deletedLocallyIds.contains(id)) return;
     final videoId = track['source_id'] as String;
+    if (p2pSync.preferPeerForYouTube(
+      hasOnlinePeers: hasOnlinePeers,
+      provider: '${track['provider']}',
+      hasLocalFile: localFiles.containsKey(id),
+    )) {
+      await _receive(track, priority: true);
+      if (localFiles.containsKey(id)) return;
+    }
     downloadingIds.add(id);
     downloadProgress[id] = 0.0;
     notifyListeners();
@@ -1381,12 +1400,9 @@ class AppController extends ChangeNotifier {
         _showTemporaryTransferStatus('MP3 скачан: ${track['title']}');
       } else {
         final err = result.errorMessage ?? 'Не удалось получить аудиопоток';
-        failedDownloads[id] = err;
         transferStatus = 'Ошибка: $err (${track['title']})';
         notifyListeners();
 
-        // Fallback: if direct YouTube download failed on this device,
-        // attempt peer receive in case another user device (e.g. PC) has it
         if (token != null) {
           await _receive(track);
           if (localFiles.containsKey(id)) {
@@ -1394,6 +1410,9 @@ class AppController extends ChangeNotifier {
             transferStatus = 'Получено через синхронизацию: ${track['title']}';
             notifyListeners();
           } else {
+            if (p2pSync.shouldRecordFailedDownload(handshakeRetry: false)) {
+              failedDownloads[id] = err;
+            }
             transferStatus = 'Ошибка: $err (${track['title']})';
             notifyListeners();
             Future.delayed(const Duration(seconds: 4), () {
@@ -1404,6 +1423,7 @@ class AppController extends ChangeNotifier {
             });
           }
         } else {
+          failedDownloads[id] = err;
           Future.delayed(const Duration(seconds: 4), () {
             if (transferStatus.startsWith('Ошибка')) {
               transferStatus = '';
@@ -1855,14 +1875,63 @@ class AppController extends ChangeNotifier {
 
       // 2. If it's a YouTube track and not yet downloaded, stream immediately while downloading
       if (track['provider'] == 'youtube') {
-        transferStatus = 'Подключение к потоку YouTube: ${track['title']}';
-        notifyListeners();
-        try {
-          final streamResult = await ytService.getStreamResult(
-            track['source_id'] as String,
+        if (p2pSync.preferPeerForYouTube(
+          hasOnlinePeers: hasOnlinePeers,
+          provider: 'youtube',
+          hasLocalFile: false,
+        )) {
+          transferStatus = 'Загрузка с ПК: ${track['title']}...';
+          notifyListeners();
+          await _receive(track, priority: true).timeout(
+            const Duration(seconds: 30),
+            onTimeout: () {},
           );
+          localPath = localFiles[id];
+          if (localPath != null && await File(localPath).exists()) {
+            transferStatus = '';
+            notifyListeners();
+          }
+        }
+        if (localPath != null && await File(localPath).exists()) {
+          try {
+            final source = MediaService.createAudioSource(
+              trackId: id,
+              title: track['title'] as String,
+              artist: track['artist'] as String?,
+              album: track['album'] as String?,
+              localFilePath: localPath,
+              localArtworkPath: artworkFiles[id],
+              thumbnailNetworkUrl: track['thumbnail_url'] as String?,
+            );
+            if (deletedLocallyIds.contains(id)) return false;
+            await player.setAudioSource(source);
+            if (deletedLocallyIds.contains(id)) return false;
+            unawaited(_recordHistory(id));
+            await player.play();
+            notifyListeners();
+            return success = true;
+          } catch (e) {
+            debugPrint('Error playing peer file: $e');
+          }
+        }
+        if (localPath == null) {
+        final connecting = 'Подключение к потоку YouTube: ${track['title']}';
+        transferStatus = connecting;
+        notifyListeners();
+        final statusWatch = Timer(const Duration(seconds: 12), () {
+          if (transferStatus == connecting) {
+            transferStatus = '';
+            notifyListeners();
+          }
+        });
+        try {
+          final streamResult = await ytService
+              .getStreamResult(track['source_id'] as String)
+              .timeout(const Duration(seconds: 20));
           if (deletedLocallyIds.contains(id)) return false;
           if (streamResult.isSuccess) {
+            statusWatch.cancel();
+            transferStatus = '';
             final source = MediaService.createAudioSource(
               trackId: id,
               title: track['title'] as String,
@@ -1880,6 +1949,7 @@ class AppController extends ChangeNotifier {
             notifyListeners();
             return success = true;
           } else {
+            statusWatch.cancel();
             transferStatus =
                 '${streamResult.errorMessage ?? 'Поток YouTube недоступен'}: '
                 '${track['title']}. Трек поставлен на скачивание.';
@@ -1888,12 +1958,14 @@ class AppController extends ChangeNotifier {
             return false;
           }
         } catch (e) {
+          statusWatch.cancel();
           debugPrint('Error streaming YouTube: $e');
           transferStatus =
               'Ошибка потока YouTube (${friendlyErrorMessage(e)}): ${track['title']}. Трек поставлен на скачивание.';
           notifyListeners();
           unawaited(downloadYouTubeTrack(track, force: true, priority: true));
           return false;
+        }
         }
       }
 
@@ -2216,11 +2288,19 @@ class AppController extends ChangeNotifier {
       }
     }
     deletedLocallyIds.remove(trackId);
+    deviceTrackStatuses.remove(trackId);
     _failedRelayTransfers.remove(trackId);
     _relayAttempts.remove(trackId);
     _relayRetryTimers.remove(trackId)?.cancel();
     failedDownloads.remove(trackId);
     await save();
+    if (token != null) {
+      await mutate('track.device_status', {
+        'track_id': trackId,
+        'device_id': deviceId,
+        'status': 'active',
+      });
+    }
     if (!localFiles.containsKey(trackId)) unawaited(transferNow());
     notifyListeners();
   }
