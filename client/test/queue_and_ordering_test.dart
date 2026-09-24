@@ -118,5 +118,74 @@ void main() {
       expect(ids, {'1', '2', '3', '4', '5'});
       expect(controller.hasNext, isTrue);
     });
+
+    test('Selecting track in activePlaybackQueue preserves sequence and does not reshuffle', () async {
+      final controller = AppController();
+      controller.tracks.addAll([
+        {'id': '1', 'title': 'One'},
+        {'id': '2', 'title': 'Two'},
+        {'id': '3', 'title': 'Three'},
+        {'id': '4', 'title': 'Four'},
+        {'id': '5', 'title': 'Five'},
+      ]);
+
+      controller.isShuffle = true;
+      await controller.playTrack(controller.tracks[0]);
+      final initialUpcoming = controller.activePlaybackQueue.map((e) => e.track['id']).toList();
+      expect(initialUpcoming.first, '1');
+      expect(initialUpcoming.length, 5);
+
+      // Select track at index 2 from active queue
+      final targetEntry = controller.activePlaybackQueue[2];
+      final targetId = targetEntry.track['id'];
+      final expectedFollowing = initialUpcoming.sublist(3);
+
+      await controller.playPlaybackQueueEntry(targetEntry);
+
+      expect(controller.playingId, targetId);
+      final newUpcoming = controller.activePlaybackQueue.map((e) => e.track['id']).toList();
+      // First in new activePlaybackQueue is the selected track
+      expect(newUpcoming.first, targetId);
+      // Following tracks must preserve their exact order from before
+      expect(newUpcoming.sublist(1), expectedFollowing);
+    });
+
+    test('shuffleUpcomingPlayback shuffles only upcoming tracks without touching deviceQueue or current track', () async {
+      final controller = AppController();
+      controller.tracks.addAll([
+        {'id': '1', 'title': 'One'},
+        {'id': '2', 'title': 'Two'},
+        {'id': '3', 'title': 'Three'},
+        {'id': '4', 'title': 'Four'},
+        {'id': '5', 'title': 'Five'},
+        {'id': '6', 'title': 'Six'},
+        {'id': 'q1', 'title': 'Queued'},
+      ]);
+
+      await controller.playTrack(controller.tracks[0], playbackIds: ['1', '2', '3', '4', '5', '6'], playbackIndex: 0);
+      await controller.addToQueue('q1');
+
+      expect(controller.playingId, '1');
+      expect(controller.deviceQueue.length, 1);
+      expect(controller.deviceQueue.first['track_id'], 'q1');
+
+      // Shuffle upcoming playback
+      controller.shuffleUpcomingPlayback();
+
+      // Current track and deviceQueue must remain untouched
+      expect(controller.playingId, '1');
+      expect(controller.deviceQueue.length, 1);
+      expect(controller.deviceQueue.first['track_id'], 'q1');
+
+      // Upcoming tracks (excluding pinned tracks) must still contain all original tracks
+      final queuedIds = controller.deviceQueue.map((q) => q['track_id']).toSet();
+      final upcomingIds = controller.activePlaybackQueue
+          .skip(1)
+          .where((e) => !queuedIds.contains(e.track['id']))
+          .map((e) => e.track['id'])
+          .toSet();
+      expect(upcomingIds, {'2', '3', '4', '5', '6'});
+      expect(controller.isShuffle, isTrue);
+    });
   });
 }

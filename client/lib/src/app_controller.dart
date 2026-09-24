@@ -1754,7 +1754,7 @@ class AppController extends ChangeNotifier {
       // Immediately highlight and select the track so the UI updates instantly
       playingId = id;
       playingFolder = folderId;
-      if (isShuffle) {
+      if (isShuffle && playbackIndex == null) {
         final scopeFolder = folderId ?? playingFolder;
         List<String> pool;
         if (scopeFolder != null) {
@@ -2347,6 +2347,45 @@ class AppController extends ChangeNotifier {
     }
     _playbackIds.removeAt(playbackIndex);
     _playbackEntryKeys.removeAt(playbackIndex);
+    notifyListeners();
+  }
+
+  /// Shuffles only the upcoming part of the active playback sequence
+  /// (tracks after the currently playing one).
+  /// Pinned queue (deviceQueue) and already played tracks are preserved.
+  void shuffleUpcomingPlayback() {
+    final firstUpcoming = currentPlaybackIndex + 1;
+    final upcomingCount = _playbackIds.length - firstUpcoming;
+    if (firstUpcoming <= 0 || upcomingCount <= 1) return;
+
+    final queuedIds = deviceQueue
+        .map((item) => item['track_id'] as String)
+        .toSet();
+
+    // Identify indices in upcoming that are NOT pinned in deviceQueue
+    final targetIndices = <int>[];
+    for (var i = firstUpcoming; i < _playbackIds.length; i++) {
+      if (!queuedIds.contains(_playbackIds[i])) {
+        targetIndices.add(i);
+      }
+    }
+
+    if (targetIndices.length <= 1) return;
+
+    final unpinnedIds = targetIndices.map((i) => _playbackIds[i]).toList();
+    final unpinnedKeys = targetIndices.map((i) => _playbackEntryKeys[i]).toList();
+
+    final perm = List<int>.generate(targetIndices.length, (i) => i);
+    perm.shuffle(Random.secure());
+
+    for (var i = 0; i < targetIndices.length; i++) {
+      final targetIdx = targetIndices[i];
+      final srcIdx = perm[i];
+      _playbackIds[targetIdx] = unpinnedIds[srcIdx];
+      _playbackEntryKeys[targetIdx] = unpinnedKeys[srcIdx];
+    }
+
+    isShuffle = true;
     notifyListeners();
   }
 

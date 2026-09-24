@@ -816,18 +816,18 @@ class _PlaybackQueue extends StatelessWidget {
             ),
           ),
         ),
-        if (deviceQueue.isNotEmpty) ...[
+        if (upcoming.length > 1)
           IconButton(
             icon: const Icon(Icons.shuffle, size: 20),
-            tooltip: 'Перемешать',
-            onPressed: deviceQueue.length > 1 ? controller.shuffleQueue : null,
+            tooltip: 'Перемешать следующие треки',
+            onPressed: controller.shuffleUpcomingPlayback,
           ),
+        if (deviceQueue.isNotEmpty)
           IconButton(
             icon: const Icon(Icons.clear_all, size: 20),
-            tooltip: 'Очистить очередь',
+            tooltip: 'Очистить закрепленные',
             onPressed: () => controller.setDeviceQueue([]),
           ),
-        ],
       ],
     );
 
@@ -988,26 +988,54 @@ class _PlaybackQueue extends StatelessWidget {
         children: [
           Padding(
             padding: const EdgeInsets.only(top: 4, bottom: 4),
-            child: Text(
-              'Закреплено в очереди (${deviceQueue.length})',
-              style: const TextStyle(
-                color: MaboyColors.primary,
-                fontWeight: FontWeight.bold,
-                fontSize: 13,
-              ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Закреплено в очереди (${deviceQueue.length})',
+                    style: const TextStyle(
+                      color: MaboyColors.primary,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+                if (deviceQueue.length > 1)
+                  IconButton(
+                    icon: const Icon(Icons.shuffle, size: 18),
+                    tooltip: 'Перемешать закрепленные',
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: controller.shuffleQueue,
+                  ),
+              ],
             ),
           ),
           buildDeviceQueue(),
           const Divider(height: 16),
           Padding(
             padding: const EdgeInsets.only(top: 4, bottom: 4),
-            child: Text(
-              'Далее (${visibleUpcoming.length})',
-              style: const TextStyle(
-                color: MaboyColors.textMuted,
-                fontWeight: FontWeight.bold,
-                fontSize: 13,
-              ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Далее (${visibleUpcoming.length})',
+                    style: const TextStyle(
+                      color: MaboyColors.textMuted,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 13,
+                    ),
+                  ),
+                ),
+                if (upcoming.length > 1)
+                  IconButton(
+                    icon: const Icon(Icons.shuffle, size: 18),
+                    tooltip: 'Перемешать следующие треки',
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(),
+                    onPressed: controller.shuffleUpcomingPlayback,
+                  ),
+              ],
             ),
           ),
           buildUpcoming(),
