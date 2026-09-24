@@ -58,5 +58,15 @@ void main() {
           'Сервер недоступен (HTTP connection timed out after 0:00:25.000000, host: maboy.dofic.site, port: 443)';
       expect(friendlyErrorMessage(rawString), 'Вы не в сети');
     });
+
+    test('FormatException with Internal Server Error is converted to "Ошибка сервера (500)"', () {
+      const error = FormatException('Unexpected character (at character 1)\nInternal Server Error\n^');
+      expect(friendlyErrorMessage(error), 'Ошибка сервера (500)');
+    });
+
+    test('Generic FormatException is converted to "Некорректный ответ сервера"', () {
+      const error = FormatException('Invalid JSON');
+      expect(friendlyErrorMessage(error), 'Некорректный ответ сервера');
+    });
   });
 }

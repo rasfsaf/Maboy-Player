@@ -63,6 +63,12 @@ String friendlyErrorMessage(dynamic error) {
   if (lower.contains('handshakeexception')) {
     return 'Ошибка защищённого соединения';
   }
+  if (lower.contains('internal server error')) {
+    return 'Ошибка сервера (500)';
+  }
+  if (error is FormatException) {
+    return 'Некорректный ответ сервера';
+  }
   return text;
 }
 
@@ -102,7 +108,15 @@ class SyncApi {
         const Duration(seconds: 25),
       );
       final text = await utf8.decoder.bind(response).join();
-      final decoded = jsonDecode(text) as Map<String, dynamic>;
+      Map<String, dynamic> decoded = const {};
+      try {
+        final parsed = jsonDecode(text);
+        if (parsed is Map<String, dynamic>) {
+          decoded = parsed;
+        }
+      } catch (_) {
+        // Plain text or HTML response (e.g. 500 Internal Server Error)
+      }
       if (response.statusCode >= 400) {
         final detail = decoded['detail'];
         String msg;
@@ -112,6 +126,8 @@ class SyncApi {
           msg = 'Пользователь с таким email уже существует';
         } else if (detail != null) {
           msg = '$detail';
+        } else if (response.statusCode >= 500) {
+          msg = 'Ошибка сервера (${response.statusCode})';
         } else {
           msg = 'Ошибка сервера (${response.statusCode})';
         }
