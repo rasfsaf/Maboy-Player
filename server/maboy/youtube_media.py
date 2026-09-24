@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import logging
 import os
 import re
@@ -96,6 +97,64 @@ def _prune_cache(cache_dir: Path, *, protected: Path | None = None) -> None:
             logger.warning("Unable to prune YouTube cache file %s", path.name)
 
 
+_AGE_PLAYER_CLIENTS = (
+    "tv_embedded",
+    "web_embedded",
+    "tv",
+    "web_safari",
+)
+
+
+def _is_age_restriction(diagnostics: str) -> bool:
+    lowered = diagnostics.lower()
+    return (
+        "confirm your age" in lowered
+        or "age-restricted" in lowered
+        or "inappropriate for some users" in lowered
+        or "sign in to confirm your age" in lowered
+    )
+
+
+def _without_player_client(args: list[str]) -> list[str]:
+    cleaned: list[str] = []
+    skip_value = False
+    for arg in args:
+        if skip_value:
+            skip_value = False
+            continue
+        if arg == "--extractor-args":
+            skip_value = True
+            continue
+        cleaned.append(arg)
+    return cleaned
+
+
+async def _run_yt_dlp(
+    args: list[str], cache_dir: Path, temporary_base: Path
+) -> tuple[int, str, Path]:
+    process = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        _, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=240)
+    except asyncio.TimeoutError as exc:
+        process.kill()
+        await process.wait()
+        for leftover in cache_dir.glob(f"{temporary_base.name}.*"):
+            leftover.unlink(missing_ok=True)
+        raise YouTubeDownloadError(
+            "Сервер превысил таймаут скачивания YouTube"
+        ) from exc
+    produced = Path(f"{temporary_base}.mp3")
+    return (
+        process.returncode or 0,
+        stderr_bytes.decode("utf-8", errors="replace"),
+        produced,
+    )
+
+
 async def ensure_youtube_audio(video_id: str) -> Path:
     """Return a cached MP3, downloading it once for every Maboy account."""
     if not _VIDEO_ID.fullmatch(video_id):
@@ -142,29 +201,12 @@ async def ensure_youtube_audio(video_id: str) -> Path:
                 )
             )
 
-            env = os.environ.copy()
-            process = await asyncio.create_subprocess_exec(
-                *args,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
+            args.extend(
+                (
+                    "--no-playlist",
+                args, cache_dir, temporary_base
             )
-            try:
-                _, stderr_bytes = await asyncio.wait_for(
-                    process.communicate(), timeout=240
-                )
-            except asyncio.TimeoutError as exc:
-                process.kill()
-                await process.wait()
-                for leftover in cache_dir.glob(f"{temporary_base.name}.*"):
-                    leftover.unlink(missing_ok=True)
-                raise YouTubeDownloadError(
-                    "Сервер превысил таймаут скачивания YouTube"
-                ) from exc
-
-            stderr = stderr_bytes.decode("utf-8", errors="replace")
-            produced = Path(f"{temporary_base}.mp3")
-            if process.returncode != 0 or not produced.is_file():
+            if returncode != 0 or not produced.is_file():
                 logger.warning(
                     "yt-dlp failed for %s: %s", video_id, stderr[-2_000:]
                 )
@@ -174,25 +216,47 @@ async def ensure_youtube_audio(video_id: str) -> Path:
                         solve_recaptcha, "https://www.youtube.com/watch", video_id, 30
                     )
                     if token:
-                        retry_args = [
-                            *args,
-                            "--extractor-args",
-                            f"youtube:captcha_token={token}",
-                        ]
-                        retry = await asyncio.create_subprocess_exec(
-                            *retry_args,
-                            stdout=asyncio.subprocess.PIPE,
-                            stderr=asyncio.subprocess.PIPE,
+                        po_token = base64.b64encode(token.encode()).decode()
+                        returncode, stderr, produced = await _run_yt_dlp(
+                            [
+                                *args,
+                                "--extractor-args",
+                                f"youtube:po_token=web.gvs+{po_token}",
+                            ],
+                            cache_dir,
+                            temporary_base,
                         )
-                        await retry.communicate()
-                        if retry.returncode == 0 and produced.is_file():
-                            produced.replace(target)
-                            await _promote_cookie_copy(task_cookie, cache_dir)
-                            _prune_cache(cache_dir, protected=target)
-                            return target
-                for leftover in cache_dir.glob(f"{temporary_base.name}.*"):
-                    leftover.unlink(missing_ok=True)
-                raise YouTubeDownloadError(_classify_failure(stderr))
+                if (
+                    (returncode != 0 or not produced.is_file())
+                    and task_cookie is not None
+                    and _is_age_restriction(stderr)
+                ):
+                    # Default web player still age-gates a logged-in cookie jar.
+                    # Embedded and TV players accept the same jar.
+                    base_args = _without_player_client(args)
+                    for player_client in _AGE_PLAYER_CLIENTS:
+                        for leftover in cache_dir.glob(f"{temporary_base.name}.*"):
+                            leftover.unlink(missing_ok=True)
+                        logger.info(
+                            "Retrying age-restricted %s via player client %s",
+                            video_id,
+                            player_client,
+                        )
+                        returncode, stderr, produced = await _run_yt_dlp(
+                            [
+                                *base_args,
+                                "--extractor-args",
+                                f"youtube:player_client={player_client}",
+                            ],
+                            cache_dir,
+                            temporary_base,
+                        )
+                        if returncode == 0 and produced.is_file():
+                            break
+                if returncode != 0 or not produced.is_file():
+                    for leftover in cache_dir.glob(f"{temporary_base.name}.*"):
+                        leftover.unlink(missing_ok=True)
+                    raise YouTubeDownloadError(_classify_failure(stderr))
 
             produced.replace(target)
             await _promote_cookie_copy(task_cookie, cache_dir)

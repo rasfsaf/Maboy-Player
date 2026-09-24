@@ -3,6 +3,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
+import 'captcha_solver_service.dart';
+
 class YouTubeMetadata {
   YouTubeMetadata({
     required this.id,
@@ -66,9 +68,50 @@ abstract class YouTubeProvider {
 }
 
 class YouTubeDownloadService implements YouTubeProvider {
-  YouTubeDownloadService() : _yt = YoutubeExplode();
+  YouTubeDownloadService({YoutubeExplode? youtube, CaptchaSolverService? captcha})
+    : _yt = youtube ?? YoutubeExplode(),
+      _captcha = captcha ?? CaptchaSolverService();
 
   final YoutubeExplode _yt;
+  final CaptchaSolverService _captcha;
+
+  bool _needsCaptcha(String output) {
+    final text = output.toLowerCase();
+    return text.contains('captcha') || text.contains('not a bot') || text.contains('sign in to confirm');
+  }
+
+  Future<YouTubeDownloadResult?> _retryYtDlpWithCaptcha(
+    String cmd,
+    List<String> args,
+    void Function(double)? onProgress,
+    File finalMp3,
+  ) async {
+    final token = await _captcha.solve(
+      const CaptchaTask(
+        type: 'RecaptchaV2TaskProxyless',
+        websiteUrl: 'https://www.youtube.com',
+        websiteKey: 'youtube',
+      ),
+      timeout: const Duration(seconds: 30),
+    );
+    if (token == null || token.isEmpty) return null;
+    final poToken = base64Encode(utf8.encode(token));
+    final retry = await Process.start(cmd, [
+      ...args,
+      '--extractor-args',
+      'youtube:po_token=web.gvs+$poToken',
+    ]);
+    retry.stdout.transform(utf8.decoder).listen((text) {
+      final match = RegExp(r'\[download\]\s+(\d+\.?\d*)%').firstMatch(text);
+      final pct = double.tryParse(match?.group(1) ?? '');
+      if (pct != null) onProgress?.call(pct / 100.0);
+    });
+    final code = await retry.exitCode.timeout(const Duration(minutes: 3));
+    if (code == 0 && await finalMp3.exists()) {
+      return YouTubeDownloadResult(file: finalMp3);
+    }
+    return null;
+  }
   String? _ytDlpCommand;
 
   List<File> _cookieCandidates([Directory? outputDirectory]) {
@@ -412,7 +455,7 @@ class YouTubeDownloadService implements YouTubeProvider {
             final match = RegExp(r'(\d+(?:\.\d+)?)%').firstMatch(data);
             if (match != null) {
               final pct = double.tryParse(match.group(1) ?? '0');
-              if (pct != null) onProgress(pct / 100.0);
+      if (pct != null) onProgress?.call(pct / 100.0);
             }
           }
         });
@@ -423,7 +466,12 @@ class YouTubeDownloadService implements YouTubeProvider {
         if (exitCode == 0 && await finalMp3.exists()) {
           return YouTubeDownloadResult(file: finalMp3);
         }
-        ytDlpFailure = classifyYtDlpError(diagnostics.toString());
+        final firstError = diagnostics.toString();
+        if (_needsCaptcha(firstError)) {
+          final retried = await _retryYtDlpWithCaptcha(cmd, args, onProgress, finalMp3);
+          if (retried != null) return retried;
+        }
+        ytDlpFailure = classifyYtDlpError(firstError);
       } on TimeoutException {
         ytDlpFailure = classifyYtDlpError('timeout');
       } catch (error) {
