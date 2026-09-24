@@ -80,12 +80,8 @@ class YouTubeDownloadService implements YouTubeProvider {
     return text.contains('captcha') || text.contains('not a bot') || text.contains('sign in to confirm');
   }
 
-  Future<YouTubeDownloadResult?> _retryYtDlpWithCaptcha(
-    String cmd,
-    List<String> args,
-    void Function(double)? onProgress,
-    File finalMp3,
-  ) async {
+  Future<List<String>?> captchaRetryArgs(String diagnostics, List<String> args) async {
+    if (!_needsCaptcha(diagnostics)) return null;
     final token = await _captcha.solve(
       const CaptchaTask(
         type: 'RecaptchaV2TaskProxyless',
@@ -96,11 +92,19 @@ class YouTubeDownloadService implements YouTubeProvider {
     );
     if (token == null || token.isEmpty) return null;
     final poToken = base64Encode(utf8.encode(token));
-    final retry = await Process.start(cmd, [
-      ...args,
-      '--extractor-args',
-      'youtube:po_token=web.gvs+$poToken',
-    ]);
+    return [...args, '--extractor-args', 'youtube:po_token=web.gvs+$poToken'];
+  }
+
+  Future<YouTubeDownloadResult?> _retryYtDlpWithCaptcha(
+    String cmd,
+    List<String> args,
+    void Function(double)? onProgress,
+    File finalMp3,
+    String diagnostics,
+  ) async {
+    final retryArgs = await captchaRetryArgs(diagnostics, args);
+    if (retryArgs == null) return null;
+    final retry = await Process.start(cmd, retryArgs);
     retry.stdout.transform(utf8.decoder).listen((text) {
       final match = RegExp(r'\[download\]\s+(\d+\.?\d*)%').firstMatch(text);
       final pct = double.tryParse(match?.group(1) ?? '');
@@ -468,7 +472,7 @@ class YouTubeDownloadService implements YouTubeProvider {
         }
         final firstError = diagnostics.toString();
         if (_needsCaptcha(firstError)) {
-          final retried = await _retryYtDlpWithCaptcha(cmd, args, onProgress, finalMp3);
+          final retried = await _retryYtDlpWithCaptcha(cmd, args, onProgress, finalMp3, firstError);
           if (retried != null) return retried;
         }
         ytDlpFailure = classifyYtDlpError(firstError);
