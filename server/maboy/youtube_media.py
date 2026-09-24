@@ -174,13 +174,15 @@ async def ensure_youtube_audio(video_id: str) -> Path:
                         solve_recaptcha, "https://www.youtube.com/watch", video_id, 30
                     )
                     if token:
-                        retry_env = os.environ.copy()
-                        retry_env["YTDLP_CAPTCHA_TOKEN"] = token
-                        retry = await asyncio.create_subprocess_exec(
+                        retry_args = [
                             *args,
+                            "--extractor-args",
+                            f"youtube:captcha_token={token}",
+                        ]
+                        retry = await asyncio.create_subprocess_exec(
+                            *retry_args,
                             stdout=asyncio.subprocess.PIPE,
                             stderr=asyncio.subprocess.PIPE,
-                            env=retry_env,
                         )
                         await retry.communicate()
                         if retry.returncode == 0 and produced.is_file():
