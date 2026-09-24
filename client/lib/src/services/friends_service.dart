@@ -1,6 +1,24 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import '../api.dart';
+
+class UserLookupResult {
+  const UserLookupResult({
+    required this.exists,
+    this.nickname = '',
+    this.id = '',
+    this.status = 'none', // 'none', 'self', 'pending', 'accepted', 'declined', 'incoming'
+    this.error,
+  });
+
+  final bool exists;
+  final String nickname;
+  final String id;
+  final String status;
+  final String? error;
+}
 
 class FriendUser {
   FriendUser({
@@ -109,11 +127,16 @@ class TrackTransfer {
 class FriendsService extends ChangeNotifier {
   FriendsService({
     required this.getCurrentAccount,
+    this.apiProvider,
     this.onTrackAccepted,
   });
 
   final String? Function() getCurrentAccount;
+  final SyncApi? Function()? apiProvider;
   final Future<void> Function(Map<String, dynamic> track)? onTrackAccepted;
+
+  String? lastActionMessage;
+  bool _isSyncing = false;
 
   static const String _friendsKey = 'maboy_friends_list';
   static const String _requestsKey = 'maboy_friend_requests';
@@ -239,19 +262,78 @@ class FriendsService extends ChangeNotifier {
     );
   }
 
-  /// Sends a friend request to a user by nick
+  /// Looks up whether a user with given nickname exists
+  Future<UserLookupResult> lookupNickname(String nickname) async {
+    final trimmed = nickname.trim().toLowerCase();
+    if (trimmed.isEmpty) {
+      return const UserLookupResult(exists: false);
+    }
+    final myNick = currentNickname.toLowerCase();
+    if (trimmed == myNick) {
+      return UserLookupResult(
+        exists: true,
+        nickname: currentNickname,
+        status: 'self',
+      );
+    }
+
+    final api = apiProvider?.call();
+    if (api == null || api.token == null) {
+      // Local fallback / offline: if in friends list or requests, report status
+      final isFriend = _friends.any((f) => f.nickname.toLowerCase() == trimmed);
+      if (isFriend) {
+        return UserLookupResult(exists: true, nickname: trimmed, status: 'accepted');
+      }
+      final isRequested = _requests.any(
+        (r) => r.toNickname.toLowerCase() == trimmed && r.status == 'pending',
+      );
+      if (isRequested) {
+        return UserLookupResult(exists: true, nickname: trimmed, status: 'pending');
+      }
+      return UserLookupResult(exists: false, nickname: trimmed);
+    }
+
+    try {
+      final res = await api.request(
+        'GET',
+        '/friends/lookup?nickname=${Uri.encodeComponent(trimmed)}',
+      );
+      final exists = res['exists'] as bool? ?? false;
+      return UserLookupResult(
+        exists: exists,
+        nickname: res['nickname'] as String? ?? trimmed,
+        id: res['id'] as String? ?? '',
+        status: res['status'] as String? ?? 'none',
+      );
+    } catch (e) {
+      return UserLookupResult(
+        exists: false,
+        nickname: trimmed,
+        error: friendlyErrorMessage(e),
+      );
+    }
+  }
+
+  /// Sends a friend request to a user by nick with backend validation
   Future<bool> sendFriendRequest(String targetNick) async {
     final trimmed = targetNick.trim();
-    if (trimmed.isEmpty) return false;
+    if (trimmed.isEmpty) {
+      lastActionMessage = 'Введите никнейм';
+      return false;
+    }
     final myNick = currentNickname;
-    if (trimmed.toLowerCase() == myNick.toLowerCase()) return false;
-
-    // Check if already friends
-    if (_friends.any((f) => f.nickname.toLowerCase() == trimmed.toLowerCase())) {
+    if (trimmed.toLowerCase() == myNick.toLowerCase()) {
+      lastActionMessage = 'Нельзя отправить запрос самому себе';
       return false;
     }
 
-    // Check if already requested
+    // Check if already friends
+    if (_friends.any((f) => f.nickname.toLowerCase() == trimmed.toLowerCase())) {
+      lastActionMessage = 'Пользователь уже в вашем списке друзей';
+      return false;
+    }
+
+    // Check if already requested locally
     final existing = _requests.firstWhere(
       (r) =>
           r.fromNickname.toLowerCase() == myNick.toLowerCase() &&
@@ -265,10 +347,42 @@ class FriendsService extends ChangeNotifier {
         createdAt: DateTime.now(),
       ),
     );
-    if (existing.id.isNotEmpty) return false;
+    if (existing.id.isNotEmpty) {
+      lastActionMessage = 'Запрос уже отправлен ранее';
+      return false;
+    }
+
+    final api = apiProvider?.call();
+    String newId = DateTime.now().millisecondsSinceEpoch.toString();
+    if (api != null && api.token != null) {
+      try {
+        final res = await api.request('POST', '/friends/requests', {
+          'nickname': trimmed.toLowerCase(),
+        });
+        if (res['id'] != null) {
+          newId = res['id'] as String;
+        }
+      } on ApiException catch (e) {
+        if (e.status == 404) {
+          lastActionMessage = 'Пользователь @$trimmed не найден на сервере';
+          return false;
+        } else if (e.status == 422) {
+          lastActionMessage = 'Нельзя отправить запрос самому себе';
+          return false;
+        } else if (e.status == 409) {
+          lastActionMessage = 'Запрос уже существует или ник не задан';
+          return false;
+        }
+        lastActionMessage = friendlyErrorMessage(e);
+        return false;
+      } catch (e) {
+        lastActionMessage = friendlyErrorMessage(e);
+        return false;
+      }
+    }
 
     final request = FriendRequest(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      id: newId,
       fromEmail: getCurrentAccount() ?? '',
       fromNickname: myNick,
       toNickname: trimmed,
@@ -277,26 +391,36 @@ class FriendsService extends ChangeNotifier {
     _requests.add(request);
     await save();
     notifyListeners();
+    lastActionMessage = 'Запрос в друзья отправлен @$trimmed';
     return true;
   }
 
   /// Accepts an incoming friend request
   Future<void> acceptFriendRequest(String requestId) async {
     final index = _requests.indexWhere((r) => r.id == requestId);
-    if (index < 0) return;
-    final req = _requests[index];
-    req.status = 'accepted';
+    final req = index >= 0 ? _requests[index] : null;
 
-    // Add sender to friends
-    if (!_friends.any((f) => f.nickname.toLowerCase() == req.fromNickname.toLowerCase())) {
-      _friends.add(
-        FriendUser(
-          id: req.id,
-          email: req.fromEmail,
-          nickname: req.fromNickname,
-          addedAt: DateTime.now(),
-        ),
-      );
+    final api = apiProvider?.call();
+    if (api != null && api.token != null) {
+      try {
+        await api.request('POST', '/friends/requests/$requestId/accept');
+      } catch (e) {
+        debugPrint('Failed to accept friend request on server: $e');
+      }
+    }
+
+    if (req != null) {
+      req.status = 'accepted';
+      if (!_friends.any((f) => f.nickname.toLowerCase() == req.fromNickname.toLowerCase())) {
+        _friends.add(
+          FriendUser(
+            id: req.id,
+            email: req.fromEmail,
+            nickname: req.fromNickname,
+            addedAt: DateTime.now(),
+          ),
+        );
+      }
     }
 
     await save();
@@ -305,18 +429,189 @@ class FriendsService extends ChangeNotifier {
 
   /// Declines an incoming friend request
   Future<void> declineFriendRequest(String requestId) async {
+    final api = apiProvider?.call();
+    if (api != null && api.token != null) {
+      try {
+        await api.request('POST', '/friends/requests/$requestId/decline');
+      } catch (e) {
+        debugPrint('Failed to decline friend request on server: $e');
+      }
+    }
+
     final index = _requests.indexWhere((r) => r.id == requestId);
-    if (index < 0) return;
-    _requests[index].status = 'declined';
-    await save();
-    notifyListeners();
+    if (index >= 0) {
+      _requests[index].status = 'declined';
+      await save();
+      notifyListeners();
+    }
   }
 
   /// Removes a friend
   Future<void> removeFriend(String friendId) async {
-    _friends.removeWhere((f) => f.id == friendId);
+    final api = apiProvider?.call();
+    if (api != null && api.token != null) {
+      try {
+        await api.request('DELETE', '/friends/$friendId');
+      } catch (e) {
+        debugPrint('Failed to remove friend on server: $e');
+      }
+    }
+    _friends.removeWhere(
+      (f) => f.id == friendId || f.nickname.toLowerCase() == friendId.toLowerCase(),
+    );
     await save();
     notifyListeners();
+  }
+
+  /// Synchronizes friends, incoming requests, and shares with the server
+  Future<void> syncWithServer() async {
+    final api = apiProvider?.call();
+    if (api == null || api.token == null || _isSyncing) return;
+    _isSyncing = true;
+    try {
+      final res = await api.request('GET', '/friends');
+      final friendsRaw = res['friends'] as List? ?? [];
+      final incomingRaw = res['incoming'] as List? ?? [];
+      final outgoingRaw = res['outgoing'] as List? ?? [];
+      final sharesRaw = res['shares'] as List? ?? [];
+
+      _friends.clear();
+      for (final f in friendsRaw) {
+        final map = f as Map<String, dynamic>;
+        _friends.add(FriendUser(
+          id: map['id'] as String? ?? '',
+          email: '',
+          nickname: map['nickname'] as String? ?? '',
+          addedAt: DateTime.now(),
+        ));
+      }
+
+      // Sync incoming requests
+      for (final inc in incomingRaw) {
+        final map = inc as Map<String, dynamic>;
+        final reqId = map['id'] as String? ?? '';
+        final fromNick = map['nickname'] as String? ?? '';
+        final existingIdx = _requests.indexWhere((r) => r.id == reqId);
+        if (existingIdx >= 0) {
+          _requests[existingIdx].status = 'pending';
+        } else {
+          _requests.add(FriendRequest(
+            id: reqId,
+            fromEmail: '',
+            fromNickname: fromNick,
+            toNickname: currentNickname,
+            status: 'pending',
+            createdAt: DateTime.now(),
+          ));
+        }
+      }
+
+      // Sync outgoing requests
+      for (final out in outgoingRaw) {
+        final map = out as Map<String, dynamic>;
+        final reqId = map['id'] as String? ?? '';
+        final toNick = map['nickname'] as String? ?? '';
+        final existingIdx = _requests.indexWhere((r) => r.id == reqId);
+        if (existingIdx < 0 && toNick.isNotEmpty) {
+          _requests.add(FriendRequest(
+            id: reqId,
+            fromEmail: getCurrentAccount() ?? '',
+            fromNickname: currentNickname,
+            toNickname: toNick,
+            status: 'pending',
+            createdAt: DateTime.now(),
+          ));
+        }
+      }
+
+      // Sync incoming shares / transfers
+      for (final s in sharesRaw) {
+        final map = s as Map<String, dynamic>;
+        final shareId = map['id'] as String? ?? '';
+        final fromNick = map['nickname'] as String? ?? '';
+        final existingIdx = _transfers.indexWhere((t) => t.id == shareId);
+        if (existingIdx >= 0) {
+          _transfers[existingIdx].status = 'pending_approval';
+        } else {
+          _transfers.add(TrackTransfer(
+            id: shareId,
+            fromNickname: fromNick,
+            toNickname: currentNickname,
+            track: {
+              'id': map['track_id'] ?? shareId,
+              'title': map['title'] ?? '',
+              'artist': map['artist'] ?? '',
+              'provider': map['provider'] ?? 'local',
+              'source_id': map['source_id'] ?? '',
+            },
+            status: 'pending_approval',
+            createdAt: DateTime.now(),
+          ));
+        }
+      }
+
+      await save();
+      notifyListeners();
+    } catch (e) {
+      debugPrint('FriendsService.syncWithServer error: $e');
+    } finally {
+      _isSyncing = false;
+    }
+  }
+
+  /// Handles real-time friend notifications received via WebSocket
+  Future<void> handleRealtimeEvent(Map<String, dynamic> data) async {
+    final type = data['type'] as String?;
+    if (type == 'friend_request') {
+      final reqId = data['request_id'] as String? ?? DateTime.now().millisecondsSinceEpoch.toString();
+      final fromNick = data['from_nickname'] as String? ?? '';
+      final toNick = data['to_nickname'] as String? ?? currentNickname;
+      if (fromNick.isNotEmpty) {
+        final existing = _requests.indexWhere((r) => r.id == reqId);
+        if (existing < 0) {
+          _requests.add(FriendRequest(
+            id: reqId,
+            fromEmail: '',
+            fromNickname: fromNick,
+            toNickname: toNick,
+            status: 'pending',
+            createdAt: DateTime.now(),
+          ));
+          await save();
+          notifyListeners();
+        }
+      }
+      unawaited(syncWithServer());
+    } else if (type == 'friend_accepted' ||
+        type == 'friend_declined' ||
+        type == 'friend_removed') {
+      await syncWithServer();
+    } else if (type == 'track_share') {
+      final shareId = data['share_id'] as String? ?? DateTime.now().millisecondsSinceEpoch.toString();
+      final fromNick = data['from_nickname'] as String? ?? '';
+      if (fromNick.isNotEmpty) {
+        final existing = _transfers.indexWhere((t) => t.id == shareId);
+        if (existing < 0) {
+          _transfers.add(TrackTransfer(
+            id: shareId,
+            fromNickname: fromNick,
+            toNickname: currentNickname,
+            track: {
+              'id': data['source_track_id'] ?? shareId,
+              'title': data['title'] ?? '',
+              'artist': data['artist'] ?? '',
+              'provider': data['provider'] ?? 'local',
+              'source_id': data['source_id'] ?? '',
+            },
+            status: 'pending_approval',
+            createdAt: DateTime.now(),
+          ));
+          await save();
+          notifyListeners();
+        }
+      }
+      unawaited(syncWithServer());
+    }
   }
 
   /// Proposes a track to a friend (transfers only with recipient's permission)
@@ -324,8 +619,25 @@ class FriendsService extends ChangeNotifier {
     required String toNickname,
     required Map<String, dynamic> track,
   }) async {
+    final api = apiProvider?.call();
+    String transferId = DateTime.now().millisecondsSinceEpoch.toString();
+    if (api != null && api.token != null && track['id'] != null) {
+      try {
+        final res = await api.request(
+          'POST',
+          '/friends/${Uri.encodeComponent(toNickname)}/shares',
+          {'track_id': track['id']},
+        );
+        if (res['id'] != null) {
+          transferId = res['id'] as String;
+        }
+      } catch (e) {
+        debugPrint('Failed to share track on server: $e');
+      }
+    }
+
     final transfer = TrackTransfer(
-      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      id: transferId,
       fromNickname: currentNickname,
       toNickname: toNickname,
       track: track,
@@ -343,6 +655,16 @@ class FriendsService extends ChangeNotifier {
     final index = _transfers.indexWhere((t) => t.id == transferId);
     if (index < 0) return;
     final transfer = _transfers[index];
+
+    final api = apiProvider?.call();
+    if (api != null && api.token != null) {
+      try {
+        await api.request('POST', '/friends/shares/$transferId/accept');
+      } catch (e) {
+        debugPrint('Failed to accept track transfer on server: $e');
+      }
+    }
+
     transfer.status = 'completed';
     await save();
     notifyListeners();

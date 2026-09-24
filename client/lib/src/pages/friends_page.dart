@@ -25,9 +25,20 @@ class _FriendsPageState extends State<FriendsPage> {
   FriendUser? _selectedFriendForTransfer;
   String? _statusMessage;
   Timer? _statusTimer;
+  Timer? _searchDebounce;
+  UserLookupResult? _lookupResult;
+  bool _isLookingUp = false;
+  bool _isSending = false;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.friendsService.syncWithServer();
+  }
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _statusTimer?.cancel();
     _searchController.dispose();
     _trackFilterController.dispose();
@@ -320,7 +331,28 @@ class _FriendsPageState extends State<FriendsPage> {
         const SizedBox(height: 14),
         TextField(
           controller: _searchController,
-          onChanged: (val) => setState(() => _searchQuery = val),
+          onChanged: (val) {
+            setState(() => _searchQuery = val);
+            _searchDebounce?.cancel();
+            final trimmed = val.trim().toLowerCase();
+            if (trimmed.isEmpty) {
+              setState(() {
+                _lookupResult = null;
+                _isLookingUp = false;
+              });
+              return;
+            }
+            setState(() => _isLookingUp = true);
+            _searchDebounce = Timer(const Duration(milliseconds: 350), () async {
+              final res = await fs.lookupNickname(trimmed);
+              if (mounted && _searchQuery.trim().toLowerCase() == trimmed) {
+                setState(() {
+                  _lookupResult = res;
+                  _isLookingUp = false;
+                });
+              }
+            });
+          },
           decoration: InputDecoration(
             prefixIcon: const Icon(Icons.search, size: 20),
             hintText: 'Введите ник (например: alex или maria)',
@@ -328,8 +360,13 @@ class _FriendsPageState extends State<FriendsPage> {
                 ? IconButton(
                     icon: const Icon(Icons.clear, size: 18),
                     onPressed: () {
+                      _searchDebounce?.cancel();
                       _searchController.clear();
-                      setState(() => _searchQuery = '');
+                      setState(() {
+                        _searchQuery = '';
+                        _lookupResult = null;
+                        _isLookingUp = false;
+                      });
                     },
                   )
                 : null,
@@ -337,81 +374,178 @@ class _FriendsPageState extends State<FriendsPage> {
         ),
         if (trimmedSearch.isNotEmpty) ...[
           const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-            decoration: BoxDecoration(
-              color: MaboyColors.surfaceHigh,
-              borderRadius: BorderRadius.circular(10),
-            ),
-            child: Row(
-              children: [
-                CircleAvatar(
-                  radius: 18,
-                  backgroundColor: MaboyColors.primary.withValues(alpha: 0.3),
-                  child: Text(
-                    trimmedSearch[0].toUpperCase(),
-                    style: const TextStyle(fontWeight: FontWeight.bold),
+          if (_isLookingUp)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: MaboyColors.surfaceHigh,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2),
                   ),
+                  const SizedBox(width: 14),
+                  Text(
+                    'Поиск @$trimmedSearch...',
+                    style: const TextStyle(color: MaboyColors.textMuted),
+                  ),
+                ],
+              ),
+            )
+          else if (_lookupResult != null && !_lookupResult!.exists)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: MaboyColors.surfaceHigh,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: Colors.redAccent.withValues(alpha: 0.35),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        '@$trimmedSearch',
-                        style: const TextStyle(fontWeight: FontWeight.w700),
-                      ),
-                      Text(
-                        isSearchingSelf
-                            ? 'Это вы'
-                            : (isAlreadyFriend
-                                  ? 'В вашем списке друзей'
-                                  : (isAlreadyRequested
-                                        ? 'Запрос уже отправлен'
-                                        : 'Пользователь Maboy')),
-                        style: const TextStyle(
-                          fontSize: 12,
-                          color: MaboyColors.textMuted,
+              ),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 18,
+                    backgroundColor: Colors.redAccent.withValues(alpha: 0.15),
+                    child: const Icon(
+                      Icons.person_off,
+                      size: 20,
+                      color: Colors.redAccent,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '@$trimmedSearch',
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        const Text(
+                          'Пользователь не найден',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.redAccent,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            )
+          else
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+              decoration: BoxDecoration(
+                color: MaboyColors.surfaceHigh,
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Row(
+                children: [
+                  CircleAvatar(
+                    radius: 18,
+                    backgroundColor: MaboyColors.primary.withValues(alpha: 0.3),
+                    child: Text(
+                      trimmedSearch[0].toUpperCase(),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          '@${_lookupResult?.nickname.isNotEmpty == true ? _lookupResult!.nickname : trimmedSearch}',
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                        Text(
+                          isSearchingSelf || _lookupResult?.status == 'self'
+                              ? 'Это вы'
+                              : (isAlreadyFriend || _lookupResult?.status == 'accepted'
+                                    ? 'В вашем списке друзей'
+                                    : (isAlreadyRequested || _lookupResult?.status == 'pending'
+                                          ? 'Запрос уже отправлен'
+                                          : (_lookupResult?.status == 'incoming'
+                                                ? 'Запрос ожидает вашего ответа'
+                                                : 'Пользователь Maboy'))),
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: MaboyColors.textMuted,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  if (!isSearchingSelf &&
+                      !isAlreadyFriend &&
+                      !isAlreadyRequested &&
+                      _lookupResult?.status != 'self' &&
+                      _lookupResult?.status != 'accepted' &&
+                      _lookupResult?.status != 'pending' &&
+                      _lookupResult?.status != 'incoming' &&
+                      (_lookupResult == null || _lookupResult!.exists))
+                    FilledButton.icon(
+                      style: FilledButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 14,
+                          vertical: 8,
                         ),
                       ),
-                    ],
-                  ),
-                ),
-                if (!isSearchingSelf && !isAlreadyFriend && !isAlreadyRequested)
-                  FilledButton.icon(
-                    style: FilledButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 8,
-                      ),
+                      icon: _isSending
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2,
+                                color: Colors.white,
+                              ),
+                            )
+                          : const Icon(Icons.person_add, size: 18),
+                      label: Text(_isSending ? 'Отправка...' : 'В друзья'),
+                      onPressed: _isSending
+                          ? null
+                          : () async {
+                              setState(() => _isSending = true);
+                              final ok = await fs.sendFriendRequest(trimmedSearch);
+                              setState(() => _isSending = false);
+                              _showInlineStatus(
+                                fs.lastActionMessage ??
+                                    (ok
+                                        ? 'Запрос в друзья отправлен @$trimmedSearch'
+                                        : 'Не удалось отправить запрос'),
+                              );
+                              if (ok) {
+                                final updated = await fs.lookupNickname(trimmedSearch);
+                                if (mounted) setState(() => _lookupResult = updated);
+                              }
+                            },
+                    )
+                  else if (isAlreadyFriend || _lookupResult?.status == 'accepted')
+                    const Chip(
+                      avatar: Icon(Icons.check, size: 16, color: Colors.green),
+                      label: Text('В друзьях'),
+                    )
+                  else if (isAlreadyRequested || _lookupResult?.status == 'pending')
+                    const Chip(
+                      avatar: Icon(Icons.schedule, size: 16),
+                      label: Text('Запрос отправлен'),
+                    )
+                  else if (_lookupResult?.status == 'incoming')
+                    const Chip(
+                      avatar: Icon(Icons.mail_outline, size: 16, color: Colors.amber),
+                      label: Text('Входящий запрос'),
                     ),
-                    icon: const Icon(Icons.person_add, size: 18),
-                    label: const Text('В друзья'),
-                    onPressed: () async {
-                      final ok = await fs.sendFriendRequest(trimmedSearch);
-                      if (ok) {
-                        _showInlineStatus(
-                          'Запрос в друзья отправлен @$trimmedSearch',
-                        );
-                      } else {
-                        _showInlineStatus('Не удалось отправить запрос');
-                      }
-                    },
-                  )
-                else if (isAlreadyFriend)
-                  const Chip(
-                    avatar: Icon(Icons.check, size: 16, color: Colors.green),
-                    label: Text('В друзьях'),
-                  )
-                else if (isAlreadyRequested)
-                  const Chip(
-                    avatar: Icon(Icons.schedule, size: 16),
-                    label: Text('Запрос отправлен'),
-                  ),
-              ],
+                ],
+              ),
             ),
-          ),
         ],
       ],
     ),

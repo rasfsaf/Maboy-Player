@@ -277,5 +277,34 @@ void main() {
       await tester.pumpAndSettle();
       expect(controller.deviceQueue.isEmpty, isTrue);
     });
+
+    testWidgets('Search non-existent user shows error and does NOT show button "В друзья"', (tester) async {
+      final controller = AppController();
+      addTearDown(controller.dispose);
+      controller.account = 'my_user@maboy.org';
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildMaboyTheme(),
+          home: Scaffold(
+            body: FriendsPage(controller: controller),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Enter a non-existent nickname
+      final searchField = find.byType(TextField);
+      expect(searchField, findsOneWidget);
+      await tester.enterText(searchField, 'ghost_user');
+      await tester.pump();
+      // Wait for debounce timer (350ms)
+      await tester.pump(const Duration(milliseconds: 500));
+
+      // Must display "Пользователь не найден"
+      expect(find.text('Пользователь не найден'), findsOneWidget);
+      // Button "В друзья" must NOT exist for non-existent user!
+      expect(find.text('В друзья'), findsNothing);
+    });
   });
 }

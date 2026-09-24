@@ -123,6 +123,8 @@ def current_user(authorization: Annotated[str | None, Header()] = None, db: Sess
     user = db.get(User, token.user_id) if token else None
     if user is None:
         raise HTTPException(401, "Invalid token")
+    if not user.nickname or not user.nickname.strip():
+        friends_api.ensure_user_nickname(db, user)
     return user
 
 
@@ -251,6 +253,15 @@ async def announce_sync(user_id: str, version: int):
             clients_dict.pop(socket, None)
 
 
+async def notify_user(user_id: str, payload: dict):
+    clients_dict = sync_clients.get(user_id, {})
+    for socket in tuple(clients_dict.keys()):
+        try:
+            await socket.send_json(payload)
+        except (WebSocketDisconnect, RuntimeError, OSError):
+            clients_dict.pop(socket, None)
+
+
 @app.websocket("/relay/{track_id}/source")
 async def relay_source(ws: WebSocket, track_id: str, token: str, device: str):
     # Never take audio from a different account. This endpoint keeps no file bytes.
@@ -359,6 +370,8 @@ def register(credentials: Credentials, db: Session = Depends(get_db)):
     user = User(email=str(credentials.email).lower(), password_hash=password_hash(credentials.password))
     db.add(user)
     try:
+        db.flush()
+        friends_api.ensure_user_nickname(db, user)
         db.commit()
     except IntegrityError:
         db.rollback()
@@ -641,24 +654,88 @@ def list_friends(user: User = Depends(current_user), db: Session = Depends(get_d
     return friends_api.snapshot(db, user)
 
 
+@app.get("/friends/lookup")
+def lookup_friend(nickname: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return friends_api.lookup_user(db, user, nickname)
+
+
 @app.post("/friends/requests", status_code=201)
-def request_friend(body: friends_api.NicknameIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    return friends_api.request_friend(db, user, body.nickname)
+async def request_friend(body: friends_api.NicknameIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    res = friends_api.request_friend(db, user, body.nickname)
+    target_id = res.pop("target_user_id", None)
+    if target_id:
+        await notify_user(target_id, {
+            "type": "friend_request",
+            "request_id": res.get("id"),
+            "from_nickname": user.nickname,
+            "to_nickname": body.nickname,
+        })
+    return res
 
 
 @app.post("/friends/requests/{request_id}/accept")
-def accept_friend(request_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    return friends_api.accept_request(db, user, request_id)
+async def accept_friend(request_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    res = friends_api.accept_request(db, user, request_id)
+    from_user_id = res.pop("from_user_id", None)
+    if from_user_id:
+        await notify_user(from_user_id, {
+            "type": "friend_accepted",
+            "request_id": request_id,
+            "friend_nickname": user.nickname,
+            "friend_id": user.id,
+        })
+    return res
+
+
+@app.post("/friends/requests/{request_id}/decline")
+async def decline_friend(request_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    res = friends_api.decline_request(db, user, request_id)
+    from_user_id = res.pop("from_user_id", None)
+    if from_user_id:
+        await notify_user(from_user_id, {
+            "type": "friend_declined",
+            "request_id": request_id,
+            "by_nickname": user.nickname,
+        })
+    return res
+
+
+@app.delete("/friends/{friend_id}")
+async def remove_friend(friend_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    res = friends_api.remove_friend(db, user, friend_id)
+    other_id = res.pop("other_id", None)
+    if other_id:
+        await notify_user(other_id, {
+            "type": "friend_removed",
+            "friend_id": user.id,
+            "friend_nickname": user.nickname,
+        })
+    return res
 
 
 @app.post("/friends/{nickname}/shares", status_code=201)
-def share_track(nickname: str, body: friends_api.ShareIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    return friends_api.share_track(db, user, nickname, body.track_id)
+async def share_track(nickname: str, body: friends_api.ShareIn, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    res = friends_api.share_track(db, user, nickname, body.track_id)
+    target_id = res.pop("target_user_id", None)
+    if target_id:
+        await notify_user(target_id, {
+            "type": "track_share",
+            "share_id": res.get("id"),
+            "from_nickname": user.nickname,
+            "title": res.get("title"),
+            "artist": res.get("artist"),
+            "provider": res.get("provider"),
+            "source_id": res.get("source_id"),
+            "source_track_id": res.get("source_track_id"),
+        })
+    return res
 
 
 @app.post("/friends/shares/{share_id}/accept")
-def accept_share(share_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
-    return friends_api.accept_share(db, user, share_id)
+async def accept_share(share_id: str, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    res = friends_api.accept_share(db, user, share_id)
+    await announce_sync(user.id, user.version)
+    return res
 
 
 @app.get("/friends/shares/{share_id}/file")

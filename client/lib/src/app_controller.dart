@@ -173,10 +173,18 @@ class AppController extends ChangeNotifier {
       : storageService = storageService ?? StorageService() {
     friendsService = FriendsService(
       getCurrentAccount: () => userEmail,
+      apiProvider: () => api,
       onTrackAccepted: (track) async {
         final exists = tracks.any((t) => t['id'] == track['id']);
         if (!exists) {
-          tracks.insert(0, Map<String, dynamic>.from(track));
+          final firstDeleted =
+              tracks.indexWhere((t) => deletedLocallyIds.contains(t['id']));
+          if (firstDeleted >= 0) {
+            tracks.insert(firstDeleted, Map<String, dynamic>.from(track));
+          } else {
+            tracks.insert(0, Map<String, dynamic>.from(track));
+          }
+          sinkDeletedTracksToEnd();
           await save();
           notifyListeners();
         }
@@ -195,6 +203,10 @@ class AppController extends ChangeNotifier {
     player.onNext = playNext;
     player.onPrevious = playPrevious;
     player.onError = (err) async {
+      if (_switchingTrack) {
+        // Explicit track selection failed. DO NOT play a random/next track!
+        return;
+      }
       _consecutivePlaybackErrors++;
       debugPrint(
         'Maboy player error ($_consecutivePlaybackErrors/$maxConsecutivePlaybackErrors): $err',
@@ -203,8 +215,8 @@ class AppController extends ChangeNotifier {
         debugPrint(
           'Too many consecutive playback errors ($maxConsecutivePlaybackErrors). Halting auto-skip.',
         );
-        transferStatus =
-            'Ошибка воспроизведения нескольких треков подряд. Воспроизведение остановлено.';
+        _showTemporaryTransferStatus(
+            'Ошибка воспроизведения нескольких треков подряд. Воспроизведение остановлено.');
         await player.stop();
         notifyListeners();
         return;
@@ -752,6 +764,15 @@ class AppController extends ChangeNotifier {
                 if (!wasOnline && hasOnlinePeers) {
                   unawaited(transferNow());
                 }
+                notifyListeners();
+                return;
+              }
+              if (data['type'] == 'friend_request' ||
+                  data['type'] == 'friend_accepted' ||
+                  data['type'] == 'friend_declined' ||
+                  data['type'] == 'friend_removed' ||
+                  data['type'] == 'track_share') {
+                unawaited(friendsService.handleRealtimeEvent(data));
                 notifyListeners();
                 return;
               }
@@ -1445,6 +1466,8 @@ class AppController extends ChangeNotifier {
     } finally {
       downloadingIds.remove(id);
       downloadProgress.remove(id);
+      // Keep deleted tracks at the bottom regardless of download completion order.
+      sinkDeletedTracksToEnd();
       notifyListeners();
     }
   }
@@ -1766,9 +1789,42 @@ class AppController extends ChangeNotifier {
 
       // If the track is marked as deleted on this device, skip it immediately
       if (deletedLocallyIds.contains(id)) {
-        transferStatus = 'Трек удален с этого устройства: ${track['title']}';
-        notifyListeners();
+        _showTemporaryTransferStatus('Трек удален с этого устройства: ${track['title']}');
         return false;
+      }
+
+      // If the track is currently downloading, show proper error without touching player:
+      if (downloadingIds.contains(id)) {
+        final progress = downloadProgress[id];
+        final pct = (progress != null && progress > 0)
+            ? ' (${(progress * 100).toInt()}%)'
+            : '';
+        _showTemporaryTransferStatus(
+            'Трек скачивается$pct: «${track['title']}». Дождитесь завершения загрузки.');
+        return false;
+      }
+
+      var localPath = localFiles[id];
+      if (localPath != null && !await File(localPath).exists()) {
+        localFiles.remove(id);
+        localPath = null;
+        unawaited(_saveFiles());
+      }
+
+      // If missing on this device and not a streaming-capable YouTube track:
+      if (localPath == null &&
+          track['provider'] != 'youtube' &&
+          !Platform.environment.containsKey('FLUTTER_TEST')) {
+        final found = await _findLocalFileForTrack(track);
+        if (found != null) {
+          localFiles[id] = found;
+          localPath = found;
+          unawaited(_saveFiles());
+        } else if (!hasOnlinePeers) {
+          _showTemporaryTransferStatus(
+              'Трек не скачан на это устройство: «${track['title']}»');
+          return false;
+        }
       }
 
       // Immediately highlight and select the track so the UI updates instantly
@@ -1824,13 +1880,6 @@ class AppController extends ChangeNotifier {
           ? playbackIndex
           : _playbackIds.indexOf(id);
       notifyListeners();
-
-      var localPath = localFiles[id];
-      if (localPath != null && !await File(localPath).exists()) {
-        localFiles.remove(id);
-        localPath = null;
-        unawaited(_saveFiles());
-      }
 
       if (Platform.environment.containsKey('FLUTTER_TEST') && localPath == null) {
         final source = MediaService.createAudioSource(
@@ -2785,7 +2834,15 @@ class AppController extends ChangeNotifier {
     if (kind == 'track.upsert') {
       final index = tracks.indexWhere((t) => t['id'] == p['id']);
       if (index < 0) {
-        tracks.add(Map.of(p));
+        // Insert before the first deleted-locally track so that newly added /
+        // downloading tracks never appear below the "deleted" section.
+        final firstDeleted =
+            tracks.indexWhere((t) => deletedLocallyIds.contains(t['id']));
+        if (firstDeleted >= 0) {
+          tracks.insert(firstDeleted, Map.of(p));
+        } else {
+          tracks.add(Map.of(p));
+        }
       } else {
         tracks[index] = Map.of(p);
       }
@@ -2886,6 +2943,7 @@ class AppController extends ChangeNotifier {
     if (token == null || url.isEmpty || busy) return;
     busy = true;
     error = null;
+    unawaited(friendsService.syncWithServer());
     try {
       while (pending.isNotEmpty) {
         try {

@@ -29,26 +29,34 @@ android {
         versionName = flutter.versionName
     }
 
-    val signingProperties = Properties().apply {
-        val propertiesFile = rootProject.file("key.properties")
-        require(propertiesFile.exists()) {
-            "Missing android/key.properties. See client/README.md for release signing setup."
-        }
-        propertiesFile.inputStream().use(::load)
-    }
+    // key.properties is required only for release builds.
+    // Debug/profile builds use the default Android debug keystore automatically.
+    val keyPropertiesFile = rootProject.file("key.properties")
+    val hasKeyProperties = keyPropertiesFile.exists()
 
-    signingConfigs {
-        create("release") {
-            storeFile = file(signingProperties.getProperty("storeFile"))
-            storePassword = signingProperties.getProperty("storePassword")
-            keyAlias = signingProperties.getProperty("keyAlias")
-            keyPassword = signingProperties.getProperty("keyPassword")
+    if (hasKeyProperties) {
+        val signingProperties = Properties().apply {
+            keyPropertiesFile.inputStream().use(::load)
+        }
+        signingConfigs {
+            create("release") {
+                storeFile = file(signingProperties.getProperty("storeFile"))
+                storePassword = signingProperties.getProperty("storePassword")
+                keyAlias = signingProperties.getProperty("keyAlias")
+                keyPassword = signingProperties.getProperty("keyPassword")
+            }
         }
     }
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
+            if (hasKeyProperties) {
+                signingConfig = signingConfigs.getByName("release")
+            } else {
+                // Fallback to debug signing for unsigned local builds.
+                // For production, provide android/key.properties (see README).
+                signingConfig = signingConfigs.getByName("debug")
+            }
         }
     }
 }

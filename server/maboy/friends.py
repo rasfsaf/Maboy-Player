@@ -73,6 +73,65 @@ def _share_view(db: Session, row: TrackShare) -> dict:
     }
 
 
+import re
+
+
+def ensure_user_nickname(db: Session, user: User) -> str:
+    if user.nickname and user.nickname.strip():
+        return user.nickname
+    email_local = (user.email or "").split("@")[0].lower()
+    cleaned = re.sub(r"[^a-z0-9_]", "", email_local)
+    if len(cleaned) < 3:
+        cleaned = f"user_{cleaned}" if cleaned else "user"
+    base = cleaned[:20]
+    candidate = base
+    suffix = 1
+    while True:
+        existing = db.scalar(select(User).where(User.nickname == candidate, User.id != user.id))
+        if existing is None:
+            user.nickname = candidate
+            db.commit()
+            return candidate
+        candidate = f"{base}_{suffix}"[:24]
+        suffix += 1
+
+
+def lookup_user(db: Session, user: User, nickname: str) -> dict:
+    trimmed = nickname.strip().lower()
+    if not trimmed:
+        return {"exists": False, "nickname": ""}
+    target = db.scalar(select(User).where(User.nickname == trimmed))
+    if target is None:
+        return {"exists": False, "nickname": trimmed}
+    
+    is_self = target.id == user.id
+    req = db.scalar(
+        select(FriendRequest).where(
+            (FriendRequest.from_user_id == user.id) & (FriendRequest.to_user_id == target.id)
+        )
+    )
+    status = "none"
+    if is_self:
+        status = "self"
+    elif req:
+        status = req.status
+    else:
+        rev = db.scalar(
+            select(FriendRequest).where(
+                (FriendRequest.from_user_id == target.id) & (FriendRequest.to_user_id == user.id)
+            )
+        )
+        if rev:
+            status = "incoming" if rev.status == "pending" else rev.status
+
+    return {
+        "exists": True,
+        "id": target.id,
+        "nickname": target.nickname,
+        "status": status,
+    }
+
+
 def set_nickname(db: Session, user: User, nickname: str) -> dict:
     taken = db.scalar(select(User).where(User.nickname == nickname, User.id != user.id))
     if taken:
@@ -84,7 +143,7 @@ def set_nickname(db: Session, user: User, nickname: str) -> dict:
 
 def request_friend(db: Session, user: User, nickname: str) -> dict:
     if not user.nickname:
-        raise HTTPException(409, "nickname_required")
+        ensure_user_nickname(db, user)
     if nickname == user.nickname:
         raise HTTPException(422, "self_request")
     target = db.scalar(select(User).where(User.nickname == nickname))
@@ -97,16 +156,23 @@ def request_friend(db: Session, user: User, nickname: str) -> dict:
         )
     )
     if existing and existing.status == "accepted":
-        return {"status": "accepted"}
+        return {"status": "accepted", "id": existing.id, "target_user_id": target.id}
     if existing and existing.status == "pending" and existing.from_user_id == target.id:
         existing.status = "accepted"
         db.commit()
-        return {"status": "accepted"}
+        return {"status": "accepted", "id": existing.id, "target_user_id": target.id}
     if existing and existing.status == "pending":
-        return {"status": "pending"}
-    db.add(FriendRequest(from_user_id=user.id, to_user_id=target.id))
+        return {"status": "pending", "id": existing.id, "target_user_id": target.id}
+    if existing and existing.status == "declined":
+        existing.from_user_id = user.id
+        existing.to_user_id = target.id
+        existing.status = "pending"
+        db.commit()
+        return {"status": "pending", "id": existing.id, "target_user_id": target.id}
+    new_req = FriendRequest(from_user_id=user.id, to_user_id=target.id)
+    db.add(new_req)
     db.commit()
-    return {"status": "pending"}
+    return {"status": "pending", "id": new_req.id, "target_user_id": target.id}
 
 
 def accept_request(db: Session, user: User, request_id: str) -> dict:
@@ -115,7 +181,39 @@ def accept_request(db: Session, user: User, request_id: str) -> dict:
         raise HTTPException(404, "request_not_found")
     row.status = "accepted"
     db.commit()
-    return {"status": "accepted"}
+    return {"status": "accepted", "from_user_id": row.from_user_id}
+
+
+def decline_request(db: Session, user: User, request_id: str) -> dict:
+    row = db.get(FriendRequest, request_id)
+    if row is None or row.to_user_id != user.id or row.status != "pending":
+        raise HTTPException(404, "request_not_found")
+    row.status = "declined"
+    db.commit()
+    return {"status": "declined", "from_user_id": row.from_user_id}
+
+
+def remove_friend(db: Session, user: User, friend_id: str) -> dict:
+    other = db.get(User, friend_id)
+    if other is None:
+        other = db.scalar(select(User).where(User.nickname == friend_id))
+    if other is None:
+        raise HTTPException(404, "friend_not_found")
+    row = db.scalar(
+        select(FriendRequest).where(
+            FriendRequest.status == "accepted",
+            (
+                (FriendRequest.from_user_id == user.id) & (FriendRequest.to_user_id == other.id)
+            ) | (
+                (FriendRequest.from_user_id == other.id) & (FriendRequest.to_user_id == user.id)
+            ),
+        )
+    )
+    if row is None:
+        raise HTTPException(404, "not_friends")
+    db.delete(row)
+    db.commit()
+    return {"status": "removed", "other_id": other.id}
 
 
 def share_track(db: Session, user: User, nickname: str, track_id: str) -> dict:
@@ -126,7 +224,7 @@ def share_track(db: Session, user: User, nickname: str, track_id: str) -> dict:
     friends = snapshot(db, user)["friends"]
     if not any(person["id"] == target.id for person in friends):
         raise HTTPException(403, "not_friends")
-    db.add(TrackShare(
+    share = TrackShare(
         from_user_id=user.id,
         to_user_id=target.id,
         source_track_id=track.id,
@@ -134,9 +232,19 @@ def share_track(db: Session, user: User, nickname: str, track_id: str) -> dict:
         artist=track.artist,
         provider=track.provider,
         source_id=track.source_id,
-    ))
+    )
+    db.add(share)
     db.commit()
-    return {"status": "pending"}
+    return {
+        "status": "pending",
+        "id": share.id,
+        "target_user_id": target.id,
+        "title": track.title,
+        "artist": track.artist or "",
+        "provider": track.provider,
+        "source_id": track.source_id,
+        "source_track_id": track.id,
+    }
 
 
 def accept_share(db: Session, user: User, share_id: str) -> dict:

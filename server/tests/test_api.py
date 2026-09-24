@@ -552,3 +552,58 @@ def test_sync_presence_and_grace_period(client, monkeypatch):
         # Now let ws2 disconnect and wait for grace period to expire
         time.sleep(0.4)
         assert ws1.receive_json() == {"type": "presence", "peer_count": 0}
+
+
+def test_friend_pipeline_and_websocket_notification(client):
+    auth_alice = register(client, "alice@example.com")
+    auth_bob = register(client, "bob@example.com")
+
+    # 1. Nicknames are auto-assigned on registration
+    alice_info = client.get("/friends", headers=auth_alice).json()
+    bob_info = client.get("/friends", headers=auth_bob).json()
+    assert alice_info["nickname"] == "alice"
+    assert bob_info["nickname"] == "bob"
+
+    # 2. Non-existent user lookup and request rejection
+    ghost_lookup = client.get("/friends/lookup?nickname=ghost_user", headers=auth_alice).json()
+    assert ghost_lookup["exists"] is False
+
+    ghost_req = client.post("/friends/requests", headers=auth_alice, json={"nickname": "ghost_user"})
+    assert ghost_req.status_code == 404
+    assert ghost_req.json()["detail"] == "user_not_found"
+
+    # 3. Existing user lookup
+    bob_lookup = client.get("/friends/lookup?nickname=bob", headers=auth_alice).json()
+    assert bob_lookup["exists"] is True
+    assert bob_lookup["nickname"] == "bob"
+
+    # 4. WebSocket notification on friend request
+    bob_token = auth_bob["Authorization"].removeprefix("Bearer ")
+    with client.websocket_connect(f"/sync/events?token={bob_token}&device_id=bob-phone") as bob_ws:
+        init_presence = bob_ws.receive_json()
+        assert init_presence["type"] == "presence"
+
+        # Alice sends request
+        req_res = client.post("/friends/requests", headers=auth_alice, json={"nickname": "bob"})
+        assert req_res.status_code == 201
+
+        # Bob receives notification on device!
+        notify = bob_ws.receive_json()
+        assert notify["type"] == "friend_request"
+        assert notify["from_nickname"] == "alice"
+        assert notify["to_nickname"] == "bob"
+        req_id = notify["request_id"]
+
+        # Alice connects and Bob accepts -> Alice receives notification!
+        alice_token = auth_alice["Authorization"].removeprefix("Bearer ")
+        with client.websocket_connect(f"/sync/events?token={alice_token}&device_id=alice-pc") as alice_ws:
+            alice_presence = alice_ws.receive_json()
+            assert alice_presence["type"] == "presence"
+
+            accept_res = client.post(f"/friends/requests/{req_id}/accept", headers=auth_bob)
+            assert accept_res.status_code == 200
+
+            alice_notify = alice_ws.receive_json()
+            assert alice_notify["type"] == "friend_accepted"
+            assert alice_notify["friend_nickname"] == "bob"
+
