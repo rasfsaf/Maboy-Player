@@ -226,6 +226,7 @@ if ($Platform -eq "all" -or $Platform -eq "android") {
             exit 1
         }
         Write-Host "[OK] Android release APK updated from VPS: $ApkDest" -ForegroundColor Green
+        Copy-Item $ApkDest (Join-Path $ScriptDir "app-release.apk") -Force
 
         # Clean VPS temporary intermediate files to save disk space
         ssh $VPSHost "rm -rf /opt/maboy/build/client/build/app/intermediates /opt/maboy/build/client/build/app/tmp 2>/dev/null || true"

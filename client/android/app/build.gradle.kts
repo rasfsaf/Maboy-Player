@@ -29,8 +29,6 @@ android {
         versionName = flutter.versionName
     }
 
-    // key.properties is required only for release builds.
-    // Debug/profile builds use the default Android debug keystore automatically.
     val keyPropertiesFile = rootProject.file("key.properties")
     val hasKeyProperties = keyPropertiesFile.exists()
 
@@ -40,7 +38,8 @@ android {
         }
         signingConfigs {
             create("release") {
-                storeFile = file(signingProperties.getProperty("storeFile"))
+                val storeFilePath = signingProperties.getProperty("storeFile")
+                storeFile = if (file(storeFilePath).exists()) file(storeFilePath) else rootProject.file(storeFilePath)
                 storePassword = signingProperties.getProperty("storePassword")
                 keyAlias = signingProperties.getProperty("keyAlias")
                 keyPassword = signingProperties.getProperty("keyPassword")
@@ -53,9 +52,7 @@ android {
             if (hasKeyProperties) {
                 signingConfig = signingConfigs.getByName("release")
             } else {
-                // Fallback to debug signing for unsigned local builds.
-                // For production, provide android/key.properties (see README).
-                signingConfig = signingConfigs.getByName("debug")
+                error("Missing android/key.properties! Release APK must be signed with official maboy_release.jks to prevent package update conflicts.")
             }
         }
     }
