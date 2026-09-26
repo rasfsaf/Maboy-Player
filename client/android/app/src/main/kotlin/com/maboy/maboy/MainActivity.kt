@@ -13,7 +13,12 @@ import android.os.Environment
 import android.provider.MediaStore
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
+import io.flutter.plugin.common.EventChannel
 import io.flutter.plugin.common.MethodChannel
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import java.io.File
 import android.util.Log
 
@@ -34,6 +39,135 @@ class MainActivity : FlutterActivity() {
             if (AudioManager.ACTION_AUDIO_BECOMING_NOISY == intent?.action) {
                 mediaChannel?.invokeMethod("onAudioBecomingNoisy", null)
             }
+        }
+    }
+
+    private val sleepEventsChannelName = "jigit.studio/sleep_events"
+    private var sleepEventSink: EventChannel.EventSink? = null
+    private var sensorManager: SensorManager? = null
+    private var accelerometer: Sensor? = null
+    private var lastMovementSampleTime: Long = 0L
+    private var lastShakeSampleTime: Long = 0L
+
+    private val screenReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (Intent.ACTION_SCREEN_ON == intent?.action) {
+                runOnUiThread {
+                    sleepEventSink?.success(mapOf("type" to "screen_on"))
+                }
+            }
+        }
+    }
+
+    private val sleepSegmentReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent == null) return
+            try {
+                val hasSleepClass = try {
+                    Class.forName("com.google.android.gms.location.SleepSegmentEvent")
+                    true
+                } catch (e: Throwable) {
+                    false
+                }
+                if (hasSleepClass) {
+                    val extractMethod = Class.forName("com.google.android.gms.location.SleepSegmentEvent")
+                        .getMethod("extractEvents", Intent::class.java)
+                    val events = extractMethod.invoke(null, intent) as? List<*>
+                    if (events != null && events.isNotEmpty()) {
+                        val getConfidence = events[0]::class.java.getMethod("getStatus")
+                        val confidence = (getConfidence.invoke(events[0]) as? Number)?.toInt() ?: 100
+                        runOnUiThread {
+                            sleepEventSink?.success(mapOf("type" to "sleep_segment", "confidence" to confidence))
+                        }
+                        return
+                    }
+                }
+                if (intent.hasExtra("confidence")) {
+                    val conf = intent.getIntExtra("confidence", 80)
+                    runOnUiThread {
+                        sleepEventSink?.success(mapOf("type" to "sleep_segment", "confidence" to conf))
+                    }
+                }
+            } catch (e: Exception) {
+                Log.w("maboy", "Error extracting sleep segment", e)
+            }
+        }
+    }
+
+    private val accelerometerListener = object : SensorEventListener {
+        override fun onSensorChanged(event: SensorEvent?) {
+            if (event == null || event.sensor.type != Sensor.TYPE_ACCELEROMETER) return
+            val x = event.values[0]
+            val y = event.values[1]
+            val z = event.values[2]
+            val g = Math.sqrt((x * x + y * y + z * z).toDouble()).toFloat()
+            val deltaG = Math.abs(g - 9.80665f)
+
+            val now = System.currentTimeMillis()
+            if (deltaG >= 2.5f) {
+                if (now - lastShakeSampleTime >= 300) {
+                    lastShakeSampleTime = now
+                    runOnUiThread {
+                        sleepEventSink?.success(mapOf("type" to "shake", "delta" to deltaG.toDouble()))
+                    }
+                }
+            } else if (deltaG >= 0.4f) {
+                if (now - lastMovementSampleTime >= 500) {
+                    lastMovementSampleTime = now
+                    runOnUiThread {
+                        sleepEventSink?.success(mapOf("type" to "movement", "delta" to deltaG.toDouble()))
+                    }
+                }
+            }
+        }
+
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {}
+    }
+
+    private fun registerSleepSensors() {
+        try {
+            registerReceiver(screenReceiver, IntentFilter(Intent.ACTION_SCREEN_ON))
+        } catch (e: Exception) {
+            Log.w("maboy", "Unable to register screen_on receiver", e)
+        }
+        try {
+            val filter = IntentFilter("com.google.android.gms.location.sleep.EXTRA_SLEEP_SEGMENT_RESULT").apply {
+                addAction("jigit.studio.SLEEP_SEGMENT")
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(sleepSegmentReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(sleepSegmentReceiver, filter)
+            }
+        } catch (e: Exception) {
+            Log.w("maboy", "Unable to register sleep segment receiver", e)
+        }
+        try {
+            sensorManager = getSystemService(Context.SENSOR_SERVICE) as? SensorManager
+            accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+            accelerometer?.let {
+                sensorManager?.registerListener(accelerometerListener, it, 500_000)
+            }
+        } catch (e: Exception) {
+            Log.w("maboy", "Unable to register accelerometer listener", e)
+        }
+    }
+
+    private fun unregisterSleepSensors() {
+        try {
+            unregisterReceiver(screenReceiver)
+        } catch (e: Exception) {
+            // Ignored
+        }
+        try {
+            unregisterReceiver(sleepSegmentReceiver)
+        } catch (e: Exception) {
+            // Ignored
+        }
+        try {
+            sensorManager?.unregisterListener(accelerometerListener)
+        } catch (e: Exception) {
+            // Ignored
         }
     }
 
@@ -112,6 +246,7 @@ class MainActivity : FlutterActivity() {
             }
             audioDeviceCallback = null
         }
+        unregisterSleepSensors()
         super.onDestroy()
     }
 
@@ -165,6 +300,19 @@ class MainActivity : FlutterActivity() {
         initialSharedText?.let { text ->
             shareCh.invokeMethod("onSharedText", text)
         }
+
+        val sleepChannel = EventChannel(flutterEngine.dartExecutor.binaryMessenger, sleepEventsChannelName)
+        sleepChannel.setStreamHandler(object : EventChannel.StreamHandler {
+            override fun onListen(arguments: Any?, events: EventChannel.EventSink?) {
+                sleepEventSink = events
+                registerSleepSensors()
+            }
+
+            override fun onCancel(arguments: Any?) {
+                unregisterSleepSensors()
+                sleepEventSink = null
+            }
+        })
     }
 
     private fun hasAudioPermission(): Boolean {

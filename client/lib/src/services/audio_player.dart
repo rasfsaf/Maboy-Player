@@ -83,6 +83,7 @@ class MaboyAudioPlayer {
   Duration get position => _position;
   Duration? get duration => _duration;
   double get speed => _speed;
+  double get volume => _volume;
   MaboyAudioSource? get audioSource => _audioSource;
   bool get unsolicitedPlayBlocked => _unsolicitedPlayBlocked;
 

@@ -47,9 +47,16 @@ class MaboyApp extends StatelessWidget {
     debugShowCheckedModeBanner: false,
     theme: buildMaboyTheme(),
     scrollBehavior: const MaboyScrollBehavior(),
-    builder: (context, child) => Platform.isWindows && child != null
-        ? MaboyWindowFrame(child: child)
-        : child ?? const SizedBox.shrink(),
+    builder: (context, child) {
+      final content = Platform.isWindows && child != null
+          ? MaboyWindowFrame(child: child)
+          : child ?? const SizedBox.shrink();
+      return Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: (_) => controller.smartSleepService.recordUserActivity(),
+        child: content,
+      );
+    },
     home: DesktopShortcutsWrapper(
       controller: controller,
       child: HomePage(controller: controller),

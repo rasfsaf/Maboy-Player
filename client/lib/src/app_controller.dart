@@ -19,6 +19,7 @@ import 'services/captcha_solver_service.dart';
 import 'services/friends_service.dart';
 import 'services/p2p_sync_service.dart';
 import 'services/playback_manager.dart';
+import 'services/smart_sleep_service.dart';
 import 'services/storage_service.dart';
 import 'services/track_formatter.dart';
 import 'services/youtube_downloader.dart';
@@ -60,6 +61,7 @@ class AppController extends ChangeNotifier {
   final P2pSyncService p2pSync = const P2pSyncService();
   final YouTubePlaylistService ytPlaylistService = YouTubePlaylistService();
   late final PlaybackManager playbackManager;
+  late final SmartSleepService smartSleepService;
   final Map<String, String> localFiles = {};
 
   /// Original device files are kept separately from app-owned copies so a
@@ -200,6 +202,9 @@ class AppController extends ChangeNotifier {
       },
     );
     playbackManager.addListener(notifyListeners);
+
+    smartSleepService = SmartSleepService(player: player);
+    smartSleepService.addListener(notifyListeners);
     player.onNext = playNext;
     player.onPrevious = playPrevious;
     player.onError = (err) async {
@@ -245,6 +250,7 @@ class AppController extends ChangeNotifier {
           }
         }
         if (state.processingState == ProcessingState.completed) {
+          if (smartSleepService.onTrackCompleted()) return;
           playbackManager.onTrackCompleted();
           if (playbackManager.repeatMode == RepeatMode.one) {
             unawaited(player.seek(Duration.zero).then((_) => player.play()));
@@ -328,6 +334,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> togglePlayback() async {
+    smartSleepService.recordUserActivity();
     if (playingId == null || deletedLocallyIds.contains(playingId)) return;
     if (player.playing) {
       await player.pause();
@@ -337,6 +344,7 @@ class AppController extends ChangeNotifier {
   }
 
   Future<void> setVolume(double val) async {
+    smartSleepService.recordUserActivity();
     volume = val.clamp(0.0, 1.0);
     await player.setVolume(volume);
     final prefs = await SharedPreferences.getInstance();
@@ -2524,6 +2532,7 @@ class AppController extends ChangeNotifier {
   Future<void> load() async {
     await _loadDevice();
     await friendsService.load();
+    await smartSleepService.load();
     await storageService.init();
     final prefs = await SharedPreferences.getInstance();
     url = backendUrl;
@@ -2791,6 +2800,7 @@ class AppController extends ChangeNotifier {
       socket.close();
     }
     ytPlaylistService.dispose();
+    smartSleepService.dispose();
     playbackManager.dispose();
     ytService.dispose();
     player.dispose();

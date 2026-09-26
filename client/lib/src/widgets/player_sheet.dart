@@ -6,6 +6,7 @@ import '../design_system.dart';
 import '../pages/equalizer_page.dart';
 import '../services/track_formatter.dart';
 import 'marquee_text.dart';
+import 'smart_sleep_dialog.dart';
 import 'track_tile.dart';
 
 class PlayPauseButton extends StatelessWidget {
@@ -579,6 +580,19 @@ class PlayerSheet extends StatelessWidget {
       ),
       const SizedBox(width: 8),
       const Expanded(child: MaboyBrand(size: 27)),
+      IconButton(
+        tooltip: 'Умный таймер сна',
+        onPressed: () => showSmartSleepDialog(context, controller),
+        icon: Icon(
+          controller.smartSleepService.isEnabled
+              ? Icons.bedtime
+              : Icons.bedtime_outlined,
+          color: controller.smartSleepService.isEnabled
+              ? MaboyColors.primary
+              : MaboyColors.textMuted,
+          size: 21,
+        ),
+      ),
       TextButton.icon(
         onPressed: () => Navigator.push<void>(
           context,

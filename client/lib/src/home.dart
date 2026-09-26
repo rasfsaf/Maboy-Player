@@ -10,6 +10,7 @@ import 'pages/playlist_detail_page.dart';
 import 'pages/secondary_pages.dart';
 import 'widgets/marquee_text.dart';
 import 'widgets/player_sheet.dart';
+import 'widgets/smart_sleep_dialog.dart';
 import 'widgets/storage_settings_dialog.dart';
 import 'widgets/track_tile.dart';
 
@@ -360,6 +361,8 @@ class _HomePageState extends State<HomePage> {
                             builder: (_) => EqualizerPage(controller: c),
                           ),
                         );
+                      } else if (action == 'sleep') {
+                        showSmartSleepDialog(context, c);
                       } else if (action == 'scan') {
                         c.scanAndImportDeviceMusic(manual: true);
                       } else if (action == 'sync') {
@@ -410,6 +413,16 @@ class _HomePageState extends State<HomePage> {
                             Icon(Icons.tune),
                             SizedBox(width: 12),
                             Text('Эквалайзер'),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'sleep',
+                        child: Row(
+                          children: [
+                            Icon(Icons.bedtime_outlined),
+                            SizedBox(width: 12),
+                            Text('Умный сон'),
                           ],
                         ),
                       ),
