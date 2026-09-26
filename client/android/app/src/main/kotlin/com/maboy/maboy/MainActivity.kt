@@ -73,9 +73,10 @@ class MainActivity : FlutterActivity() {
                     val extractMethod = Class.forName("com.google.android.gms.location.SleepSegmentEvent")
                         .getMethod("extractEvents", Intent::class.java)
                     val events = extractMethod.invoke(null, intent) as? List<*>
-                    if (events != null && events.isNotEmpty()) {
-                        val getConfidence = events[0]::class.java.getMethod("getStatus")
-                        val confidence = (getConfidence.invoke(events[0]) as? Number)?.toInt() ?: 100
+                    val firstEvent = events?.firstOrNull()
+                    if (firstEvent != null) {
+                        val getConfidence = firstEvent.javaClass.getMethod("getStatus")
+                        val confidence = (getConfidence.invoke(firstEvent) as? Number)?.toInt() ?: 100
                         runOnUiThread {
                             sleepEventSink?.success(mapOf("type" to "sleep_segment", "confidence" to confidence))
                         }
