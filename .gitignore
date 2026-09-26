@@ -30,3 +30,8 @@ ref.txt
 *.md
 !/README.md
 !/CHANGELOG.md
+/AGENTS.md
+/opisanie*.txt
+/trashbox/
+/*.png
+
