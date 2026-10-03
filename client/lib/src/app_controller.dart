@@ -557,12 +557,29 @@ class AppController extends ChangeNotifier {
   }
 
   void _replacePlaybackIds(Iterable<String> ids) {
-    _playbackIds = ids.where((id) => !deletedLocallyIds.contains(id)).toList();
-    _playbackEntryKeys = List<String>.generate(
-      _playbackIds.length,
-      (_) => 'playback-${_playbackEntrySerial++}',
-      growable: true,
-    );
+    final filtered = ids.where((id) => !deletedLocallyIds.contains(id)).toList();
+    if (listEquals(_playbackIds, filtered) && _playbackEntryKeys.length == filtered.length) {
+      return;
+    }
+    final availableKeys = <String, List<String>>{};
+    for (var i = 0; i < _playbackIds.length; i++) {
+      if (i < _playbackEntryKeys.length) {
+        availableKeys.putIfAbsent(_playbackIds[i], () => []).add(_playbackEntryKeys[i]);
+      }
+    }
+
+    final newKeys = <String>[];
+    for (final id in filtered) {
+      final pool = availableKeys[id];
+      if (pool != null && pool.isNotEmpty) {
+        newKeys.add(pool.removeAt(0));
+      } else {
+        newKeys.add('playback-${_playbackEntrySerial++}');
+      }
+    }
+
+    _playbackIds = filtered;
+    _playbackEntryKeys = newKeys;
   }
 
   Future<void> startShuffle({
@@ -688,7 +705,7 @@ class AppController extends ChangeNotifier {
         // Remove from manual queue and sync
         final updatedQueue = List<Map<String, dynamic>>.from(queue)
           ..removeWhere((item) => item['id'] == nextItem['id']);
-        await setQueue(updatedQueue);
+        unawaited(setQueue(updatedQueue));
 
         final track = tracks.where((t) => t['id'] == qTrackId).firstOrNull;
         if (track != null && !deletedLocallyIds.contains(qTrackId)) {
@@ -2430,7 +2447,7 @@ class AppController extends ChangeNotifier {
     if (deletedLocallyIds.contains(trackId)) return;
     final items = List<Map<String, dynamic>>.from(queue);
     items.insert(next ? 0 : items.length, {'id': newId(), 'track_id': trackId});
-    await setQueue(items);
+    unawaited(setQueue(items));
 
     if (_playbackIds.isNotEmpty && currentPlaybackIndex >= 0) {
       final insertIndex = next
@@ -2440,13 +2457,17 @@ class AppController extends ChangeNotifier {
               _playbackIds.length,
             );
       final existingIndex = _playbackIds.indexOf(trackId, currentPlaybackIndex + 1);
+      String? existingKey;
       if (existingIndex >= 0) {
         _playbackIds.removeAt(existingIndex);
-        _playbackEntryKeys.removeAt(existingIndex);
+        existingKey = _playbackEntryKeys.removeAt(existingIndex);
       }
       final safeInsert = insertIndex.clamp(0, _playbackIds.length);
       _playbackIds.insert(safeInsert, trackId);
-      _playbackEntryKeys.insert(safeInsert, 'playback-${_playbackEntrySerial++}');
+      _playbackEntryKeys.insert(
+        safeInsert,
+        existingKey ?? 'playback-${_playbackEntrySerial++}',
+      );
     }
     notifyListeners();
   }
@@ -2466,7 +2487,7 @@ class AppController extends ChangeNotifier {
     // Remove selected item from manual queue so it is consumed
     final updatedQueue = List<Map<String, dynamic>>.from(queue)
       ..removeWhere((q) => q['id'] == item['id']);
-    await setQueue(updatedQueue);
+    unawaited(setQueue(updatedQueue));
 
     final qTrackId = item['track_id'] as String;
     final nextIdx = currentPlaybackIndex >= 0 ? currentPlaybackIndex + 1 : 0;

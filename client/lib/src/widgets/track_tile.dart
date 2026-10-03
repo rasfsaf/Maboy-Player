@@ -412,10 +412,8 @@ class TrackTile extends StatelessWidget {
                           unawaited(
                             controller.downloadYouTubeTrack(track, force: true),
                           );
-                        } else if (action == 'next') {
-                          controller.addToQueue(id, next: true);
                         } else if (action == 'last') {
-                          controller.addToQueue(id, next: false);
+                          controller.addToQueue(id);
                         } else if (action == 'add_to_playlist') {
                           await showAddToPlaylistDialog(context, controller, [
                             id,
@@ -435,10 +433,6 @@ class TrackTile extends StatelessWidget {
                             value: 'download_youtube',
                             child: Text('Скачать MP3'),
                           ),
-                        const PopupMenuItem(
-                          value: 'next',
-                          child: Text('Играть следующим'),
-                        ),
                         const PopupMenuItem(
                           value: 'last',
                           child: Text('Добавить в очередь'),

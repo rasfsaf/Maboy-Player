@@ -354,7 +354,7 @@ void main() {
     final actions = find.byIcon(Icons.more_vert).first;
     await tester.tap(actions);
     await tester.pumpAndSettle();
-    expect(find.text('Играть следующим'), findsOneWidget);
+    expect(find.text('Добавить в очередь'), findsOneWidget);
     await tester.tapAt(const Offset(4, 4));
     await tester.pumpAndSettle();
     expect(dragStarted, isFalse);

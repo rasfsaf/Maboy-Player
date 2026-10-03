@@ -848,10 +848,8 @@ class _PlaybackQueue extends StatelessWidget {
     Widget buildDeviceQueue() {
       return ReorderableListView.builder(
         proxyDecorator: maboyReorderProxyDecorator,
-        shrinkWrap: !isDesktop || upcoming.isNotEmpty,
-        physics: (isDesktop && upcoming.isEmpty)
-            ? const ClampingScrollPhysics()
-            : const NeverScrollableScrollPhysics(),
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
         buildDefaultDragHandles: false,
         itemCount: deviceQueue.length,
         onReorderStart: (_) => controller.beginReorder(),
@@ -941,10 +939,8 @@ class _PlaybackQueue extends StatelessWidget {
     Widget buildUpcoming() {
       return ReorderableListView.builder(
         proxyDecorator: maboyReorderProxyDecorator,
-        shrinkWrap: !isDesktop || deviceQueue.isNotEmpty,
-        physics: (isDesktop && deviceQueue.isEmpty)
-            ? const ClampingScrollPhysics()
-            : const NeverScrollableScrollPhysics(),
+        shrinkWrap: true,
+        physics: const NeverScrollableScrollPhysics(),
         buildDefaultDragHandles: false,
         itemCount: visibleUpcoming.length,
         onReorderStart: (_) => controller.beginReorder(),
@@ -974,73 +970,70 @@ class _PlaybackQueue extends StatelessWidget {
         );
       }
 
-      if (deviceQueue.isEmpty) {
-        return buildUpcoming();
-      }
-
-      if (upcoming.isEmpty) {
-        return buildDeviceQueue();
-      }
-
       return ListView(
         shrinkWrap: !isDesktop,
         physics: isDesktop
             ? const ClampingScrollPhysics()
             : const NeverScrollableScrollPhysics(),
         children: [
-          Padding(
-            padding: const EdgeInsets.only(top: 4, bottom: 4),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'Закреплено в очереди (${deviceQueue.length})',
-                    style: const TextStyle(
-                      color: MaboyColors.primary,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 13,
+          if (deviceQueue.isNotEmpty) ...[
+            Padding(
+              padding: const EdgeInsets.only(top: 4, bottom: 4),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      'Закреплено в очереди (${deviceQueue.length})',
+                      style: const TextStyle(
+                        color: MaboyColors.primary,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 13,
+                      ),
                     ),
                   ),
-                ),
-                if (deviceQueue.length > 1)
-                  IconButton(
-                    icon: const Icon(Icons.shuffle, size: 18),
-                    tooltip: 'Перемешать закрепленные',
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    onPressed: controller.shuffleQueue,
-                  ),
-              ],
-            ),
-          ),
-          buildDeviceQueue(),
-          const Divider(height: 16),
-          Padding(
-            padding: const EdgeInsets.only(top: 4, bottom: 4),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    'Далее (${visibleUpcoming.length})',
-                    style: const TextStyle(
-                      color: MaboyColors.textMuted,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 13,
+                  if (deviceQueue.length > 1)
+                    IconButton(
+                      icon: const Icon(Icons.shuffle, size: 18),
+                      tooltip: 'Перемешать закрепленные',
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(),
+                      onPressed: controller.shuffleQueue,
                     ),
-                  ),
-                ),
-                if (upcoming.length > 1)
-                  IconButton(
-                    icon: const Icon(Icons.shuffle, size: 18),
-                    tooltip: 'Перемешать следующие треки',
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints(),
-                    onPressed: controller.shuffleUpcomingPlayback,
-                  ),
-              ],
+                ],
+              ),
             ),
-          ),
-          buildUpcoming(),
+            buildDeviceQueue(),
+            if (upcoming.isNotEmpty) const Divider(height: 16),
+          ],
+          if (upcoming.isNotEmpty) ...[
+            if (deviceQueue.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.only(top: 4, bottom: 4),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        'Далее (${visibleUpcoming.length})',
+                        style: const TextStyle(
+                          color: MaboyColors.textMuted,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
+                        ),
+                      ),
+                    ),
+                    if (upcoming.length > 1)
+                      IconButton(
+                        icon: const Icon(Icons.shuffle, size: 18),
+                        tooltip: 'Перемешать следующие треки',
+                        padding: EdgeInsets.zero,
+                        constraints: const BoxConstraints(),
+                        onPressed: controller.shuffleUpcomingPlayback,
+                      ),
+                  ],
+                ),
+              ),
+            buildUpcoming(),
+          ],
         ],
       );
     }
