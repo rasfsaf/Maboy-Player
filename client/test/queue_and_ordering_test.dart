@@ -187,5 +187,106 @@ void main() {
       expect(upcomingIds, {'2', '3', '4', '5', '6'});
       expect(controller.isShuffle, isTrue);
     });
+
+    test('Multiple tracks in deviceQueue play in order without dropping items', () async {
+      final controller = AppController();
+      controller.tracks.addAll([
+        {'id': '1', 'title': 'One'},
+        {'id': '2', 'title': 'Two'},
+        {'id': '3', 'title': 'Three'},
+        {'id': 'q1', 'title': 'Queued 1'},
+        {'id': 'q2', 'title': 'Queued 2'},
+        {'id': 'q3', 'title': 'Queued 3'},
+      ]);
+
+      await controller.playTrack(controller.tracks[0], playbackIds: ['1', '2', '3'], playbackIndex: 0);
+      await controller.addToQueue('q1');
+      await controller.addToQueue('q2');
+      await controller.addToQueue('q3');
+
+      expect(controller.deviceQueue.length, 3);
+      expect(controller.deviceQueue.map((e) => e['track_id']).toList(), ['q1', 'q2', 'q3']);
+
+      // 1st playNext: consumes q1, q2 and q3 remain
+      await controller.playNext();
+      expect(controller.playingId, 'q1');
+      expect(controller.deviceQueue.length, 2);
+      expect(controller.deviceQueue.map((e) => e['track_id']).toList(), ['q2', 'q3']);
+
+      // 2nd playNext: consumes q2, q3 remains
+      await controller.playNext();
+      expect(controller.playingId, 'q2');
+      expect(controller.deviceQueue.length, 1);
+      expect(controller.deviceQueue.map((e) => e['track_id']).toList(), ['q3']);
+
+      // 3rd playNext: consumes q3, queue is empty
+      await controller.playNext();
+      expect(controller.playingId, 'q3');
+      expect(controller.deviceQueue.isEmpty, isTrue);
+
+      // 4th playNext: continues with the ambient album (track 2)
+      await controller.playNext();
+      expect(controller.playingId, '2');
+      expect(controller.deviceQueue.isEmpty, isTrue);
+    });
+
+    test('playNext is protected against concurrent calls without dropping multiple queued items', () async {
+      final controller = AppController();
+      controller.tracks.addAll([
+        {'id': '1', 'title': 'One'},
+        {'id': '2', 'title': 'Two'},
+        {'id': 'q1', 'title': 'Queued 1'},
+        {'id': 'q2', 'title': 'Queued 2'},
+      ]);
+
+      await controller.playTrack(controller.tracks[0], playbackIds: ['1', '2'], playbackIndex: 0);
+      await controller.addToQueue('q1');
+      await controller.addToQueue('q2');
+      expect(controller.deviceQueue.length, 2);
+
+      // Fire playNext concurrently
+      await Future.wait([
+        controller.playNext(),
+        controller.playNext(),
+      ]);
+
+      // Only one item must have been consumed; second item must NOT be dropped
+      expect(controller.playingId, 'q1');
+      expect(controller.deviceQueue.length, 1);
+      expect(controller.deviceQueue.first['track_id'], 'q2');
+    });
+
+    test('playQueueItem consumes item from deviceQueue and preserves ambient playlist', () async {
+      final controller = AppController();
+      controller.tracks.addAll([
+        {'id': '1', 'title': 'One'},
+        {'id': '2', 'title': 'Two'},
+        {'id': '3', 'title': 'Three'},
+        {'id': 'q1', 'title': 'Queued 1'},
+        {'id': 'q2', 'title': 'Queued 2'},
+      ]);
+
+      await controller.playTrack(controller.tracks[0], playbackIds: ['1', '2', '3'], playbackIndex: 0);
+      await controller.addToQueue('q1');
+      await controller.addToQueue('q2');
+
+      // Click on q2 directly from queue
+      final itemQ2 = controller.deviceQueue[1];
+      await controller.playQueueItem(itemQ2);
+
+      expect(controller.playingId, 'q2');
+      // q2 consumed, q1 remains in queue
+      expect(controller.deviceQueue.length, 1);
+      expect(controller.deviceQueue.first['track_id'], 'q1');
+
+      // Next track should consume q1
+      await controller.playNext();
+      expect(controller.playingId, 'q1');
+      expect(controller.deviceQueue.isEmpty, isTrue);
+
+      // Next track resumes ambient playlist at track 2
+      await controller.playNext();
+      expect(controller.playingId, '2');
+    });
   });
 }

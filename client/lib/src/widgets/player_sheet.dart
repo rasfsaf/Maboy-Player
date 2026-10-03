@@ -867,8 +867,6 @@ class _PlaybackQueue extends StatelessWidget {
           final track = controller.tracks
               .where((t) => t['id'] == item['track_id'])
               .firstOrNull;
-          final isCurrent =
-              current != null && current.track['id'] == item['track_id'];
           final formatted = TrackFormatter.split(
             rawTitle: '${track?['title'] ?? 'Трек'}',
             rawArtist: track?['artist'] as String?,
@@ -889,26 +887,16 @@ class _PlaybackQueue extends StatelessWidget {
                   size: 46,
                   radius: 5,
                 ),
-                title: isCurrent
-                    ? MarqueeText(
-                        formatted.title,
-                        style: const TextStyle(
-                          color: MaboyColors.primary,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      )
-                    : Text(
-                        formatted.title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(fontWeight: FontWeight.w600),
-                      ),
+                title: Text(
+                  formatted.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
                 subtitle: Text(
-                  isCurrent
-                      ? 'Сейчас играет'
-                      : (formatted.artist.isNotEmpty
-                          ? formatted.artist
-                          : '${track?['artist'] ?? 'Неизвестный исполнитель'}'),
+                  formatted.artist.isNotEmpty
+                      ? formatted.artist
+                      : '${track?['artist'] ?? 'Неизвестный исполнитель'}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: const TextStyle(color: MaboyColors.textMuted),
@@ -1063,7 +1051,7 @@ class _PlaybackQueue extends StatelessWidget {
         children: [
           headerRow,
           const SizedBox(height: 8),
-          if (current != null && deviceQueue.isEmpty) ...[
+          if (current != null) ...[
             _PlaybackQueueTile(
               entry: current,
               controller: controller,
@@ -1095,12 +1083,14 @@ class _PlaybackQueue extends StatelessWidget {
       children: [
         headerRow,
         const SizedBox(height: 8),
-        if (current != null && deviceQueue.isEmpty)
+        if (current != null) ...[
           _PlaybackQueueTile(
             entry: current,
             controller: controller,
             current: true,
           ),
+          const Divider(height: 16),
+        ],
         buildQueueList(),
         if (upcoming.length > visibleUpcoming.length)
           const Padding(

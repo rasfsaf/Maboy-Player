@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../app_controller.dart';
 import '../design_system.dart';
 import '../equalizer.dart';
+import '../widgets/bass_boost_section.dart';
 
 class EqualizerPage extends StatelessWidget {
   const EqualizerPage({super.key, required this.controller});
@@ -238,6 +239,8 @@ class EqualizerPage extends StatelessWidget {
                           letterSpacing: 1.1,
                         ),
                       ),
+                      const SizedBox(height: 24),
+                      BassBoostSection(controller: controller),
                     ],
                   ),
                 ),

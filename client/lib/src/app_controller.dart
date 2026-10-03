@@ -24,6 +24,7 @@ import 'services/storage_service.dart';
 import 'services/track_formatter.dart';
 import 'services/youtube_downloader.dart';
 import 'services/youtube_playlist_service.dart';
+import 'services/bass_boost_service.dart';
 
 String newId() {
   final bytes = List<int>.generate(16, (_) => Random.secure().nextInt(256));
@@ -62,6 +63,7 @@ class AppController extends ChangeNotifier {
   final YouTubePlaylistService ytPlaylistService = YouTubePlaylistService();
   late final PlaybackManager playbackManager;
   late final SmartSleepService smartSleepService;
+  final BassBoostService bassBoostService = BassBoostService();
   final Map<String, String> localFiles = {};
 
   /// Original device files are kept separately from app-owned copies so a
@@ -108,6 +110,7 @@ class AppController extends ChangeNotifier {
   bool _transferring = false;
   bool _transferRequested = false;
   bool _switchingTrack = false;
+  bool _advancingNext = false;
   bool _reordering = false;
   int _consecutivePlaybackErrors = 0;
   static const int maxConsecutivePlaybackErrors = 3;
@@ -205,10 +208,14 @@ class AppController extends ChangeNotifier {
 
     smartSleepService = SmartSleepService(player: player);
     smartSleepService.addListener(notifyListeners);
+    bassBoostService.addListener(() {
+      unawaited(_applyActiveBassBoost());
+      notifyListeners();
+    });
     player.onNext = playNext;
     player.onPrevious = playPrevious;
     player.onError = (err) async {
-      if (_switchingTrack) {
+      if (_switchingTrack || _advancingNext) {
         // Explicit track selection failed. DO NOT play a random/next track!
         return;
       }
@@ -240,8 +247,12 @@ class AppController extends ChangeNotifier {
       );
     });
 
+    ProcessingState? previousPlayerProcessingState;
     _playerSubscriptions.add(
       player.playerStateStream.listen((state) {
+        final wasCompleted = previousPlayerProcessingState == ProcessingState.completed;
+        previousPlayerProcessingState = state.processingState;
+
         if (state.processingState == ProcessingState.loading ||
             state.processingState == ProcessingState.ready ||
             state.processingState == ProcessingState.completed) {
@@ -249,7 +260,7 @@ class AppController extends ChangeNotifier {
             transferStatus = '';
           }
         }
-        if (state.processingState == ProcessingState.completed) {
+        if (state.processingState == ProcessingState.completed && !wasCompleted) {
           if (smartSleepService.onTrackCompleted()) return;
           playbackManager.onTrackCompleted();
           if (playbackManager.repeatMode == RepeatMode.one) {
@@ -409,6 +420,15 @@ class AppController extends ChangeNotifier {
         'active_preset_id': activeEqualizerPresetId,
         'gains': equalizerGains,
       }),
+    );
+  }
+
+  Future<void> _applyActiveBassBoost() async {
+    final config = bassBoostService.resolveEffectiveConfig(playingFolder);
+    await player.setBassBoost(
+      enabled: config.enabled,
+      frequency: config.frequency,
+      gainDb: config.gainDb,
     );
   }
 
@@ -587,6 +607,7 @@ class AppController extends ChangeNotifier {
       _replacePlaybackIds(shuffled);
       _currentPlaybackIndex = 0;
       playingFolder = scopeFolder;
+      unawaited(_applyActiveBassBoost());
 
       if (!player.playing && player.audioSource != null) {
         await player.play();
@@ -627,101 +648,120 @@ class AppController extends ChangeNotifier {
   Future<void> seek(Duration position) => player.seek(position);
 
   Future<void> playPrevious() async {
-    if (_switchingTrack) return;
-    if (player.position.inSeconds > 2) {
-      await player.seek(Duration.zero);
-      return;
-    }
-    final idx = currentPlaybackIndex;
-    for (var i = idx - 1; i >= 0; i--) {
-      final prevId = _playbackIds[i];
-      if (deletedLocallyIds.contains(prevId)) continue;
-      final track = tracks.where((t) => t['id'] == prevId).firstOrNull;
-      if (track != null) {
-        final ok = await playTrack(
-          track,
-          folderId: playingFolder,
-          playbackIds: _playbackIds,
-          playbackIndex: i,
-        );
-        if (ok) return;
+    if (_switchingTrack || _advancingNext) return;
+    _advancingNext = true;
+    try {
+      if (player.position.inSeconds > 2) {
+        await player.seek(Duration.zero);
+        return;
       }
+      final idx = currentPlaybackIndex;
+      for (var i = idx - 1; i >= 0; i--) {
+        final prevId = _playbackIds[i];
+        if (deletedLocallyIds.contains(prevId)) continue;
+        final track = tracks.where((t) => t['id'] == prevId).firstOrNull;
+        if (track != null) {
+          final ok = await playTrack(
+            track,
+            folderId: playingFolder,
+            playbackIds: _playbackIds,
+            playbackIndex: i,
+          );
+          if (ok) return;
+        }
+      }
+    } finally {
+      _advancingNext = false;
     }
   }
 
   Future<void> playNext() async {
-    if (_switchingTrack) return;
+    if (_switchingTrack || _advancingNext) return;
+    _advancingNext = true;
+    try {
+      // 1. Check manual queue first: queued tracks are pinned to the top and play next!
+      final visibleQueue = deviceQueue;
+      if (visibleQueue.isNotEmpty) {
+        final nextItem = visibleQueue.first;
+        final qTrackId = nextItem['track_id'] as String;
 
-    // 1. Check manual queue first: queued tracks are pinned to the top and play next!
-    final visibleQueue = deviceQueue;
-    if (visibleQueue.isNotEmpty) {
-      final nextItem = visibleQueue.first;
-      final qTrackId = nextItem['track_id'] as String;
+        // Remove from manual queue and sync
+        final updatedQueue = List<Map<String, dynamic>>.from(queue)
+          ..removeWhere((item) => item['id'] == nextItem['id']);
+        await setQueue(updatedQueue);
 
-      // Remove from manual queue and sync
-      final updatedQueue = List<Map<String, dynamic>>.from(queue)
-        ..removeWhere((item) => item['id'] == nextItem['id']);
-      await setQueue(updatedQueue);
-
-      final track = tracks.where((t) => t['id'] == qTrackId).firstOrNull;
-      if (track != null && !deletedLocallyIds.contains(qTrackId)) {
-        final nextIdx = currentPlaybackIndex >= 0 ? currentPlaybackIndex + 1 : 0;
-        final newPlaybackIds = List<String>.from(_playbackIds);
-        if (nextIdx <= newPlaybackIds.length) {
-          newPlaybackIds.insert(nextIdx, qTrackId);
-        } else {
-          newPlaybackIds.add(qTrackId);
-        }
-        final ok = await playTrack(
-          track,
-          folderId: playingFolder,
-          playbackIds: newPlaybackIds,
-          playbackIndex: nextIdx,
-        );
-        if (ok) return;
-      }
-    }
-
-    // 2. Play next in current playback list
-    if (_playbackIds.isNotEmpty) {
-      final idx = currentPlaybackIndex;
-      for (var i = idx + 1; i < _playbackIds.length; i++) {
-        final nextId = _playbackIds[i];
-        if (deletedLocallyIds.contains(nextId)) continue;
-        final track = tracks.where((t) => t['id'] == nextId).firstOrNull;
-        if (track != null) {
+        final track = tracks.where((t) => t['id'] == qTrackId).firstOrNull;
+        if (track != null && !deletedLocallyIds.contains(qTrackId)) {
+          final nextIdx = currentPlaybackIndex >= 0 ? currentPlaybackIndex + 1 : 0;
+          final newPlaybackIds = List<String>.from(_playbackIds);
+          if (nextIdx < newPlaybackIds.length && newPlaybackIds[nextIdx] == qTrackId) {
+            // Already placed at nextIdx
+          } else {
+            if (nextIdx < newPlaybackIds.length) {
+              final dupIdx = newPlaybackIds.indexOf(qTrackId, nextIdx);
+              if (dupIdx >= 0) {
+                newPlaybackIds.removeAt(dupIdx);
+              }
+            }
+            if (nextIdx <= newPlaybackIds.length) {
+              newPlaybackIds.insert(nextIdx, qTrackId);
+            } else {
+              newPlaybackIds.add(qTrackId);
+            }
+          }
           final ok = await playTrack(
             track,
             folderId: playingFolder,
-            playbackIds: _playbackIds,
-            playbackIndex: i,
+            playbackIds: newPlaybackIds,
+            playbackIndex: nextIdx,
           );
           if (ok) return;
         }
       }
-    }
 
-    // 3. When reaching the end:
-    if (isShuffle) {
-      // Completed current shuffled deck: reshuffle full pool and keep playing without stopping!
-      await startShuffle(folderId: playingFolder, forcePlay: true);
-    } else if (playbackManager.repeatMode == RepeatMode.all) {
-      // Loop back to the beginning of the playlist/tracklist
-      final idx = currentPlaybackIndex;
-      for (var i = 0; i <= idx && i < _playbackIds.length; i++) {
-        final nextId = _playbackIds[i];
-        if (deletedLocallyIds.contains(nextId)) continue;
-        final track = tracks.where((t) => t['id'] == nextId).firstOrNull;
-        if (track != null) {
-          final ok = await playTrack(
-            track,
-            folderId: playingFolder,
-            playbackIds: _playbackIds,
-            playbackIndex: i,
-          );
-          if (ok) return;
+      // 2. Play next in current playback list
+      if (_playbackIds.isNotEmpty) {
+        final idx = currentPlaybackIndex;
+        for (var i = idx + 1; i < _playbackIds.length; i++) {
+          final nextId = _playbackIds[i];
+          if (deletedLocallyIds.contains(nextId)) continue;
+          final track = tracks.where((t) => t['id'] == nextId).firstOrNull;
+          if (track != null) {
+            final ok = await playTrack(
+              track,
+              folderId: playingFolder,
+              playbackIds: _playbackIds,
+              playbackIndex: i,
+            );
+            if (ok) return;
+          }
         }
       }
+
+      // 3. When reaching the end:
+      if (isShuffle) {
+        // Completed current shuffled deck: reshuffle full pool and keep playing without stopping!
+        await startShuffle(folderId: playingFolder, forcePlay: true);
+      } else if (playbackManager.repeatMode == RepeatMode.all) {
+        // Loop back to the beginning of the playlist/tracklist
+        final idx = currentPlaybackIndex;
+        for (var i = 0; i <= idx && i < _playbackIds.length; i++) {
+          final nextId = _playbackIds[i];
+          if (deletedLocallyIds.contains(nextId)) continue;
+          final track = tracks.where((t) => t['id'] == nextId).firstOrNull;
+          if (track != null) {
+            final ok = await playTrack(
+              track,
+              folderId: playingFolder,
+              playbackIds: _playbackIds,
+              playbackIndex: i,
+            );
+            if (ok) return;
+          }
+        }
+      }
+    } finally {
+      _advancingNext = false;
     }
   }
 
@@ -1841,6 +1881,7 @@ class AppController extends ChangeNotifier {
       // Immediately highlight and select the track so the UI updates instantly
       playingId = id;
       playingFolder = folderId;
+      unawaited(_applyActiveBassBoost());
       if (isShuffle && playbackIndex == null) {
         final scopeFolder = folderId ?? playingFolder;
         List<String> pool;
@@ -2398,10 +2439,14 @@ class AppController extends ChangeNotifier {
               currentPlaybackIndex + 1,
               _playbackIds.length,
             );
-      if (!_playbackIds.sublist(currentPlaybackIndex + 1).contains(trackId)) {
-        _playbackIds.insert(insertIndex, trackId);
-        _playbackEntryKeys.insert(insertIndex, 'playback-${_playbackEntrySerial++}');
+      final existingIndex = _playbackIds.indexOf(trackId, currentPlaybackIndex + 1);
+      if (existingIndex >= 0) {
+        _playbackIds.removeAt(existingIndex);
+        _playbackEntryKeys.removeAt(existingIndex);
       }
+      final safeInsert = insertIndex.clamp(0, _playbackIds.length);
+      _playbackIds.insert(safeInsert, trackId);
+      _playbackEntryKeys.insert(safeInsert, 'playback-${_playbackEntrySerial++}');
     }
     notifyListeners();
   }
@@ -2417,17 +2462,36 @@ class AppController extends ChangeNotifier {
         .where((value) => value['id'] == item['track_id'])
         .firstOrNull;
     if (track == null) return;
-    final visibleQueue = deviceQueue;
-    final playbackIds = visibleQueue
-        .map((value) => value['track_id'] as String)
-        .toList();
-    final itemIndex = visibleQueue.indexWhere(
-      (value) => value['id'] == item['id'],
-    );
+
+    // Remove selected item from manual queue so it is consumed
+    final updatedQueue = List<Map<String, dynamic>>.from(queue)
+      ..removeWhere((q) => q['id'] == item['id']);
+    await setQueue(updatedQueue);
+
+    final qTrackId = item['track_id'] as String;
+    final nextIdx = currentPlaybackIndex >= 0 ? currentPlaybackIndex + 1 : 0;
+    final newPlaybackIds = List<String>.from(_playbackIds);
+    if (nextIdx < newPlaybackIds.length && newPlaybackIds[nextIdx] == qTrackId) {
+      // Already at nextIdx
+    } else {
+      if (nextIdx < newPlaybackIds.length) {
+        final dupIdx = newPlaybackIds.indexOf(qTrackId, nextIdx);
+        if (dupIdx >= 0) {
+          newPlaybackIds.removeAt(dupIdx);
+        }
+      }
+      if (nextIdx <= newPlaybackIds.length) {
+        newPlaybackIds.insert(nextIdx, qTrackId);
+      } else {
+        newPlaybackIds.add(qTrackId);
+      }
+    }
+
     await playTrack(
       track,
-      playbackIds: playbackIds,
-      playbackIndex: itemIndex >= 0 ? itemIndex : null,
+      folderId: playingFolder,
+      playbackIds: newPlaybackIds,
+      playbackIndex: nextIdx,
     );
   }
 
@@ -2533,6 +2597,8 @@ class AppController extends ChangeNotifier {
     await _loadDevice();
     await friendsService.load();
     await smartSleepService.load();
+    await bassBoostService.init();
+    await _applyActiveBassBoost();
     await storageService.init();
     final prefs = await SharedPreferences.getInstance();
     url = backendUrl;
@@ -2801,6 +2867,7 @@ class AppController extends ChangeNotifier {
     }
     ytPlaylistService.dispose();
     smartSleepService.dispose();
+    bassBoostService.dispose();
     playbackManager.dispose();
     ytService.dispose();
     player.dispose();
