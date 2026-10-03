@@ -32,6 +32,34 @@ void main() {
       expect(restored, equals(original));
     });
 
+    test('supports setting frequency to 0.0 Hz and serializes correctly', () {
+      const zeroFreq = BassBoostConfig(
+        enabled: true,
+        frequency: 0.0,
+        gainDb: 15.0,
+      );
+      final json = zeroFreq.toJson();
+      final restored = BassBoostConfig.fromJson(json);
+
+      expect(restored.enabled, isTrue);
+      expect(restored.frequency, 0.0);
+      expect(restored.gainDb, 15.0);
+      expect(restored, equals(zeroFreq));
+    });
+
+    test('supports arbitrary custom frequency values', () {
+      const customFreq = BassBoostConfig(
+        enabled: true,
+        frequency: 42.5,
+        gainDb: 9.0,
+      );
+      final json = customFreq.toJson();
+      final restored = BassBoostConfig.fromJson(json);
+
+      expect(restored.frequency, 42.5);
+      expect(restored, equals(customFreq));
+    });
+
     test('copyWith updates specified fields only', () {
       const original = BassBoostConfig(
         enabled: false,
@@ -129,6 +157,27 @@ void main() {
       final resolved = service.resolveEffectiveConfig('folder-edm');
       expect(resolved.frequency, 200.0);
       expect(resolved.gainDb, 6.0);
+    });
+
+    test('persists frequency of 0.0 Hz across service re-initialization', () async {
+      final service1 = BassBoostService();
+      await service1.init();
+      await service1.setGlobalConfig(
+        const BassBoostConfig(enabled: true, frequency: 0.0, gainDb: 18.0),
+      );
+      await service1.setPlaylistConfig(
+        'folder-deep',
+        const BassBoostConfig(enabled: true, frequency: 0.0, gainDb: 24.0),
+      );
+
+      final service2 = BassBoostService();
+      await service2.init();
+
+      expect(service2.globalConfig.frequency, 0.0);
+      expect(service2.globalConfig.gainDb, 18.0);
+      final playlistConfig = service2.resolveEffectiveConfig('folder-deep');
+      expect(playlistConfig.frequency, 0.0);
+      expect(playlistConfig.gainDb, 24.0);
     });
   });
 }

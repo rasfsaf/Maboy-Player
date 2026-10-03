@@ -4,6 +4,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 /// Available shelf frequencies (Hz) matching standard audio enhancements.
 const bassBoostFrequencies = <double>[
+  0,
   50,
   75,
   80,
@@ -58,7 +59,7 @@ class BassBoostConfig {
   factory BassBoostConfig.fromJson(Map<String, dynamic> json) {
     final enabled = json['enabled'] == true;
     final rawFreq = json['frequency'];
-    final frequency = (rawFreq is num && rawFreq > 0)
+    final frequency = (rawFreq is num && rawFreq >= 0)
         ? rawFreq.toDouble()
         : 150.0;
     final rawGain = json['gainDb'];

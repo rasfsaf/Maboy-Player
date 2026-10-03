@@ -329,7 +329,7 @@ class MaboyAudioPlayer {
     required double gainDb,
   }) async {
     _bassBoostEnabled = enabled;
-    _bassBoostFrequency = frequency;
+    _bassBoostFrequency = frequency < 0 ? 0.0 : frequency;
     _bassBoostGain = gainDb.clamp(0, 24);
     final player = _native;
     if (player != null) await _applyAudioEffects(player);

@@ -16,12 +16,72 @@ class BassBoostSection extends StatefulWidget {
 
 class _BassBoostSectionState extends State<BassBoostSection> {
   String? _selectedPlaylistId;
+  late final TextEditingController _freqController;
+  late final FocusNode _freqFocusNode;
 
   @override
   void initState() {
     super.initState();
     // Default to the currently playing playlist if active, otherwise global.
     _selectedPlaylistId = widget.controller.playingFolder;
+    final initialConfig = _resolveCurrentConfig();
+    _freqController =
+        TextEditingController(text: _formatFreq(initialConfig.frequency));
+    _freqFocusNode = FocusNode();
+    _freqFocusNode.addListener(_handleFreqFocusChange);
+  }
+
+  @override
+  void dispose() {
+    _freqFocusNode.removeListener(_handleFreqFocusChange);
+    _freqFocusNode.dispose();
+    _freqController.dispose();
+    super.dispose();
+  }
+
+  String _formatFreq(double f) {
+    if (f == f.roundToDouble()) {
+      return f.toInt().toString();
+    }
+    return f.toString();
+  }
+
+  BassBoostConfig _resolveCurrentConfig() {
+    final bassService = widget.controller.bassBoostService;
+    final isGlobal = _selectedPlaylistId == null;
+    final hasOverride =
+        !isGlobal && bassService.hasPlaylistOverride(_selectedPlaylistId!);
+    return isGlobal
+        ? bassService.globalConfig
+        : (hasOverride
+            ? bassService.getPlaylistConfig(_selectedPlaylistId!)!
+            : bassService.globalConfig);
+  }
+
+  void _handleFreqFocusChange() {
+    if (!_freqFocusNode.hasFocus) {
+      final text = _freqController.text.trim();
+      final parsed = double.tryParse(text);
+      if (parsed == null || parsed < 0) {
+        final config = _resolveCurrentConfig();
+        _freqController.text = _formatFreq(config.frequency);
+      }
+    }
+  }
+
+  void _applyFrequency(
+    BassBoostService bassService,
+    bool isGlobal,
+    BassBoostConfig currentConfig,
+    double freq,
+  ) {
+    final validFreq = freq < 0 ? 0.0 : freq;
+    _freqController.text = _formatFreq(validFreq);
+    _updateConfig(
+      bassService,
+      isGlobal,
+      currentConfig.copyWith(frequency: validFreq),
+    );
   }
 
   @override
@@ -41,6 +101,13 @@ class _BassBoostSectionState extends State<BassBoostSection> {
             : (hasOverride
                 ? bassService.getPlaylistConfig(_selectedPlaylistId!)!
                 : bassService.globalConfig);
+
+        if (!_freqFocusNode.hasFocus) {
+          final expectedText = _formatFreq(currentConfig.frequency);
+          if (_freqController.text != expectedText) {
+            _freqController.text = expectedText;
+          }
+        }
 
         final selectedPlaylist = isGlobal
             ? null
@@ -335,7 +402,7 @@ class _BassBoostSectionState extends State<BassBoostSection> {
                                 ),
                                 const SizedBox(height: 2),
                                 const Text(
-                                  'Частотный порог усиления саб-баса',
+                                  'Порог среза (любое значение от 0 Гц)',
                                   style: TextStyle(fontSize: 11, color: MaboyColors.textMuted),
                                 ),
                               ],
@@ -345,39 +412,171 @@ class _BassBoostSectionState extends State<BassBoostSection> {
                           Expanded(
                             flex: 3,
                             child: Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 12),
+                              height: 40,
                               decoration: BoxDecoration(
                                 color: MaboyColors.surfaceHigh,
                                 borderRadius: BorderRadius.circular(6),
                                 border: Border.all(color: MaboyColors.border),
                               ),
-                              child: DropdownButtonHideUnderline(
-                                child: DropdownButton<double>(
-                                  isExpanded: true,
-                                  value: currentConfig.frequency,
-                                  dropdownColor: MaboyColors.surfaceHigh,
-                                  items: bassBoostFrequencies.map((f) {
-                                    return DropdownMenuItem<double>(
-                                      value: f,
-                                      child: Text(
-                                        '${f.toInt()} Hz',
-                                        style: const TextStyle(fontWeight: FontWeight.w600),
+                              child: Row(
+                                children: [
+                                  Expanded(
+                                    child: TextField(
+                                      controller: _freqController,
+                                      focusNode: _freqFocusNode,
+                                      keyboardType: const TextInputType.numberWithOptions(
+                                        decimal: true,
                                       ),
-                                    );
-                                  }).toList(),
-                                  onChanged: (newFreq) {
-                                    if (newFreq == null) return;
-                                    _updateConfig(
-                                      bassService,
-                                      isGlobal,
-                                      currentConfig.copyWith(frequency: newFreq),
-                                    );
-                                  },
-                                ),
+                                      textAlign: TextAlign.right,
+                                      style: const TextStyle(
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 13,
+                                      ),
+                                      decoration: const InputDecoration(
+                                        isDense: true,
+                                        border: InputBorder.none,
+                                        contentPadding: EdgeInsets.symmetric(
+                                          horizontal: 8,
+                                          vertical: 10,
+                                        ),
+                                        hintText: '0',
+                                        suffixText: ' Hz',
+                                        suffixStyle: TextStyle(
+                                          fontSize: 12,
+                                          fontWeight: FontWeight.w600,
+                                          color: MaboyColors.textMuted,
+                                        ),
+                                      ),
+                                      onChanged: (text) {
+                                        final parsed = double.tryParse(text.trim());
+                                        if (parsed != null && parsed >= 0) {
+                                          _updateConfig(
+                                            bassService,
+                                            isGlobal,
+                                            currentConfig.copyWith(frequency: parsed),
+                                          );
+                                        }
+                                      },
+                                      onSubmitted: (text) {
+                                        final parsed = double.tryParse(text.trim());
+                                        if (parsed != null && parsed >= 0) {
+                                          _applyFrequency(
+                                            bassService,
+                                            isGlobal,
+                                            currentConfig,
+                                            parsed,
+                                          );
+                                        } else {
+                                          _applyFrequency(
+                                            bassService,
+                                            isGlobal,
+                                            currentConfig,
+                                            currentConfig.frequency,
+                                          );
+                                        }
+                                      },
+                                    ),
+                                  ),
+                                  Container(
+                                    height: 22,
+                                    width: 1,
+                                    color: MaboyColors.border.withValues(alpha: 0.5),
+                                  ),
+                                  PopupMenuButton<double>(
+                                    tooltip: 'Выбрать пресет частоты',
+                                    icon: const Icon(
+                                      Icons.arrow_drop_down,
+                                      color: MaboyColors.textMuted,
+                                    ),
+                                    padding: EdgeInsets.zero,
+                                    color: MaboyColors.surfaceHigh,
+                                    itemBuilder: (context) => [
+                                      const PopupMenuItem<double>(
+                                        value: 0.0,
+                                        child: Text(
+                                          '0 Hz (Без среза / 0 Гц)',
+                                          style: TextStyle(fontWeight: FontWeight.w700),
+                                        ),
+                                      ),
+                                      for (final f in [
+                                        50.0,
+                                        75.0,
+                                        80.0,
+                                        100.0,
+                                        125.0,
+                                        150.0,
+                                        200.0,
+                                        250.0,
+                                      ])
+                                        PopupMenuItem<double>(
+                                          value: f,
+                                          child: Text(
+                                            '${f.toInt()} Hz',
+                                            style: const TextStyle(fontWeight: FontWeight.w600),
+                                          ),
+                                        ),
+                                    ],
+                                    onSelected: (newFreq) {
+                                      _applyFrequency(
+                                        bassService,
+                                        isGlobal,
+                                        currentConfig,
+                                        newFreq,
+                                      );
+                                    },
+                                  ),
+                                ],
                               ),
                             ),
                           ),
                         ],
+                      ),
+
+                      // Quick frequency chips
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [0.0, 50.0, 80.0, 100.0, 150.0, 200.0].map((f) {
+                            final isSelected = currentConfig.frequency == f;
+                            return InkWell(
+                              borderRadius: BorderRadius.circular(4),
+                              onTap: () {
+                                _applyFrequency(bassService, isGlobal, currentConfig, f);
+                              },
+                              child: Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 7,
+                                  vertical: 3,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: isSelected
+                                      ? MaboyColors.primary.withValues(alpha: 0.22)
+                                      : MaboyColors.surfaceHigh,
+                                  border: Border.all(
+                                    color: isSelected
+                                        ? MaboyColors.primary
+                                        : MaboyColors.border.withValues(alpha: 0.5),
+                                  ),
+                                  borderRadius: BorderRadius.circular(4),
+                                ),
+                                child: Text(
+                                  f == 0 ? '0 Hz' : '${f.toInt()} Hz',
+                                  style: TextStyle(
+                                    fontSize: 10,
+                                    fontWeight:
+                                        isSelected ? FontWeight.w800 : FontWeight.w500,
+                                    color: isSelected
+                                        ? MaboyColors.primary
+                                        : MaboyColors.textMuted,
+                                  ),
+                                ),
+                              ),
+                            );
+                          }).toList(),
+                        ),
                       ),
 
                       const SizedBox(height: 16),
@@ -390,13 +589,15 @@ class _BassBoostSectionState extends State<BassBoostSection> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                Row(
+                                Wrap(
+                                  crossAxisAlignment: WrapCrossAlignment.center,
+                                  spacing: 8,
+                                  runSpacing: 4,
                                   children: [
                                     const Text(
                                       'Boost Level (Усиление):',
                                       style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
                                     ),
-                                    const SizedBox(width: 8),
                                     Container(
                                       padding: const EdgeInsets.symmetric(
                                         horizontal: 6,
