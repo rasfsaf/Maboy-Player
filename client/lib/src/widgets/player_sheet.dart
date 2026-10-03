@@ -1051,7 +1051,7 @@ class _PlaybackQueue extends StatelessWidget {
         children: [
           headerRow,
           const SizedBox(height: 8),
-          if (current != null) ...[
+          if (current != null && deviceQueue.isEmpty) ...[
             _PlaybackQueueTile(
               entry: current,
               controller: controller,
@@ -1083,14 +1083,12 @@ class _PlaybackQueue extends StatelessWidget {
       children: [
         headerRow,
         const SizedBox(height: 8),
-        if (current != null) ...[
+        if (current != null && deviceQueue.isEmpty)
           _PlaybackQueueTile(
             entry: current,
             controller: controller,
             current: true,
           ),
-          const Divider(height: 16),
-        ],
         buildQueueList(),
         if (upcoming.length > visibleUpcoming.length)
           const Padding(
