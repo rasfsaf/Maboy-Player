@@ -9,6 +9,7 @@ import 'pages/friends_page.dart';
 import 'pages/playlist_detail_page.dart';
 import 'pages/secondary_pages.dart';
 import 'widgets/marquee_text.dart';
+import 'widgets/performance_settings_dialog.dart';
 import 'widgets/player_sheet.dart';
 import 'widgets/smart_sleep_dialog.dart';
 import 'widgets/storage_settings_dialog.dart';
@@ -371,6 +372,8 @@ class _HomePageState extends State<HomePage> {
                         c.transferNow();
                       } else if (action == 'storage') {
                         showStorageSettingsDialog(context, c);
+                      } else if (action == 'performance') {
+                        showPerformanceSettingsDialog(context, c);
                       } else if (action == 'logout') {
                         c.signOut();
                       }
@@ -464,6 +467,16 @@ class _HomePageState extends State<HomePage> {
                             Icon(Icons.sd_card),
                             SizedBox(width: 12),
                             Text('Хранилище музыки'),
+                          ],
+                        ),
+                      ),
+                      PopupMenuItem(
+                        value: 'performance',
+                        child: Row(
+                          children: [
+                            Icon(Icons.speed),
+                            SizedBox(width: 12),
+                            Text('Производительность'),
                           ],
                         ),
                       ),

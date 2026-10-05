@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../app_controller.dart';
 import '../design_system.dart';
 import '../pages/equalizer_page.dart';
+import '../services/performance_service.dart';
 import '../services/track_formatter.dart';
 import 'marquee_text.dart';
 import 'smart_sleep_dialog.dart';
@@ -258,10 +259,13 @@ class _GlowingQueueButtonState extends State<_GlowingQueueButton>
     _animController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1800),
-    )..repeat(reverse: true);
+    );
     _glowAnimation = Tween<double>(begin: 0.45, end: 0.90).animate(
       CurvedAnimation(parent: _animController, curve: Curves.easeInOut),
     );
+    if (PerformanceService.instance.enableContinuousAnimations) {
+      _animController.repeat(reverse: true);
+    }
   }
 
   @override
@@ -272,13 +276,18 @@ class _GlowingQueueButtonState extends State<_GlowingQueueButton>
 
   @override
   Widget build(BuildContext context) {
+    final continuous = PerformanceService.instance.enableContinuousAnimations;
+    final isOptimized = PerformanceService.instance.isOptimized;
+
     return RepaintBoundary(
       child: AnimatedBuilder(
       animation: _glowAnimation,
       builder: (context, _) {
-        final glowFactor = _isHovered ? 1.0 : _glowAnimation.value;
-        final blur = _isHovered ? 20.0 : 13.0;
-        final spread = _isHovered ? 2.5 : 1.2;
+        final glowFactor = _isHovered
+            ? 1.0
+            : (continuous ? _glowAnimation.value : 0.65);
+        final blur = _isHovered ? 18.0 : (isOptimized ? 8.0 : 13.0);
+        final spread = _isHovered ? 2.2 : (isOptimized ? 0.8 : 1.2);
 
         return Tooltip(
           message: 'Открыть плеер и очередь',
@@ -417,13 +426,17 @@ class PlayerPage extends StatelessWidget {
                       child: Opacity(
                         opacity: 0.3,
                         child: ImageFiltered(
-                          imageFilter: ImageFilter.blur(sigmaX: 48, sigmaY: 48),
+                          imageFilter: ImageFilter.blur(
+                            sigmaX: PerformanceService.instance.backgroundBlurSigma,
+                            sigmaY: PerformanceService.instance.backgroundBlurSigma,
+                          ),
                           child: FittedBox(
                             fit: BoxFit.cover,
                             child: TrackCover(
                               controller: controller,
                               track: track!,
-                              size: 800,
+                              size: 48,
+                              downsampleForBlur: true,
                               radius: 0,
                             ),
                           ),
@@ -748,36 +761,40 @@ class _DecorativeProgressCover extends StatelessWidget {
               child: Stack(
                 alignment: Alignment.center,
                 children: [
-                  Container(
-                    width: size,
-                    height: size,
-                    decoration: const BoxDecoration(
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: Color(0x44f36d79),
-                          blurRadius: 42,
-                          spreadRadius: 2,
+                  RepaintBoundary(
+                    child: Container(
+                      width: size,
+                      height: size,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0x44f36d79),
+                            blurRadius: PerformanceService.instance.isOptimized ? 24 : 38,
+                            spreadRadius: 2,
+                          ),
+                        ],
+                      ),
+                      child: ClipOval(
+                        child: TrackCover(
+                          controller: controller,
+                          track: track,
+                          size: size,
+                          radius: size / 2,
                         ),
-                      ],
-                    ),
-                    child: ClipOval(
-                      child: TrackCover(
-                        controller: controller,
-                        track: track,
-                        size: size,
-                        radius: size / 2,
                       ),
                     ),
                   ),
-                  SizedBox.square(
-                    dimension: size + 24,
-                    child: CircularProgressIndicator(
-                      value: fraction,
-                      strokeWidth: 5,
-                      strokeCap: StrokeCap.round,
-                      color: MaboyColors.primary,
-                      backgroundColor: Colors.white.withValues(alpha: 0.16),
+                  RepaintBoundary(
+                    child: SizedBox.square(
+                      dimension: size + 24,
+                      child: CircularProgressIndicator(
+                        value: fraction,
+                        strokeWidth: 5,
+                        strokeCap: StrokeCap.round,
+                        color: MaboyColors.primary,
+                        backgroundColor: Colors.white.withValues(alpha: 0.16),
+                      ),
                     ),
                   ),
                 ],

@@ -26,6 +26,10 @@ class MaboyScrollBehavior extends MaterialScrollBehavior {
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Bound image cache to prevent memory pressure and GC jank on 2GB devices like Samsung Galaxy J4
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 48 * 1024 * 1024;
+  PaintingBinding.instance.imageCache.maximumSize = 250;
+
   await MediaService.init();
   final controller = AppController();
   await controller.load();

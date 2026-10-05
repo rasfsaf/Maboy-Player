@@ -25,6 +25,7 @@ import 'services/track_formatter.dart';
 import 'services/youtube_downloader.dart';
 import 'services/youtube_playlist_service.dart';
 import 'services/bass_boost_service.dart';
+import 'services/performance_service.dart';
 
 String newId() {
   final bytes = List<int>.generate(16, (_) => Random.secure().nextInt(256));
@@ -64,6 +65,7 @@ class AppController extends ChangeNotifier {
   late final PlaybackManager playbackManager;
   late final SmartSleepService smartSleepService;
   final BassBoostService bassBoostService = BassBoostService();
+  final PerformanceService performanceService = PerformanceService.instance;
   final Map<String, String> localFiles = {};
 
   /// Original device files are kept separately from app-owned copies so a
@@ -212,6 +214,7 @@ class AppController extends ChangeNotifier {
       unawaited(_applyActiveBassBoost());
       notifyListeners();
     });
+    performanceService.addListener(notifyListeners);
     player.onNext = playNext;
     player.onPrevious = playPrevious;
     player.onError = (err) async {
@@ -2621,6 +2624,7 @@ class AppController extends ChangeNotifier {
     await bassBoostService.init();
     await _applyActiveBassBoost();
     await storageService.init();
+    await performanceService.init();
     final prefs = await SharedPreferences.getInstance();
     url = backendUrl;
     account = prefs.getString('account');
@@ -2889,6 +2893,7 @@ class AppController extends ChangeNotifier {
     ytPlaylistService.dispose();
     smartSleepService.dispose();
     bassBoostService.dispose();
+    performanceService.removeListener(notifyListeners);
     playbackManager.dispose();
     ytService.dispose();
     player.dispose();

@@ -159,12 +159,14 @@ class TrackCover extends StatelessWidget {
     required this.track,
     this.size = 44,
     this.radius = 6,
+    this.downsampleForBlur = false,
   });
 
   final AppController controller;
   final Map<String, dynamic> track;
   final double size;
   final double radius;
+  final bool downsampleForBlur;
 
   @override
   Widget build(BuildContext context) {
@@ -172,12 +174,20 @@ class TrackCover extends StatelessWidget {
     final localArt = controller.artworkFiles[id];
     final thumbUrl = track['thumbnail_url'] as String?;
 
+    final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0;
+    final cacheDim = downsampleForBlur
+        ? 48
+        : (size * dpr).round().clamp(48, 512);
+
     Widget content;
     if (localArt != null && localArt.isNotEmpty) {
       content = Image.file(
         File(localArt),
         width: size,
         height: size,
+        cacheWidth: cacheDim,
+        cacheHeight: cacheDim,
+        filterQuality: FilterQuality.medium,
         fit: BoxFit.cover,
         errorBuilder: (context, error, stackTrace) => _fallback(),
       );
@@ -186,6 +196,9 @@ class TrackCover extends StatelessWidget {
         thumbUrl,
         width: size,
         height: size,
+        cacheWidth: cacheDim,
+        cacheHeight: cacheDim,
+        filterQuality: FilterQuality.medium,
         fit: BoxFit.cover,
         errorBuilder: (context, error, stackTrace) => _fallback(),
       );
