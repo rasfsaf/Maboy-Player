@@ -72,5 +72,61 @@ void main() {
       expect(service.mode, PerformanceMode.highPerformance);
       expect(service.isOptimized, isTrue);
     });
+
+    test('AMOLED mode defaults to isOptimized and can be explicitly overridden', () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+
+      final lowEndService = PerformanceService.custom(
+        isLowEndDeviceOverride: true,
+        prefs: prefs,
+      );
+      expect(lowEndService.enableAmoledBlack, isTrue);
+
+      final highEndService = PerformanceService.custom(
+        isLowEndDeviceOverride: false,
+        prefs: prefs,
+      );
+      expect(highEndService.enableAmoledBlack, isFalse);
+
+      await highEndService.setAmoledBlack(true);
+      expect(highEndService.enableAmoledBlack, isTrue);
+      expect(prefs.getBool(PerformanceService.prefKeyAmoled), isTrue);
+
+      await lowEndService.setAmoledBlack(false);
+      expect(lowEndService.enableAmoledBlack, isFalse);
+      expect(prefs.getBool(PerformanceService.prefKeyAmoled), isFalse);
+    });
+
+    test('Battery saver defaults to true and can be toggled', () async {
+      SharedPreferences.setMockInitialValues({});
+      final prefs = await SharedPreferences.getInstance();
+
+      final service = PerformanceService.custom(prefs: prefs);
+      expect(service.batterySaver, isTrue);
+
+      await service.setBatterySaver(false);
+      expect(service.batterySaver, isFalse);
+      expect(prefs.getBool(PerformanceService.prefKeyBatterySaver), isFalse);
+
+      await service.setBatterySaver(true);
+      expect(service.batterySaver, isTrue);
+      expect(prefs.getBool(PerformanceService.prefKeyBatterySaver), isTrue);
+    });
+
+    test('Restores AMOLED and battery saver settings from SharedPreferences', () async {
+      SharedPreferences.setMockInitialValues({
+        PerformanceService.prefKeyMode: 'highPerformance',
+        PerformanceService.prefKeyAmoled: true,
+        PerformanceService.prefKeyBatterySaver: false,
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final service = PerformanceService.custom();
+      await service.init(prefs: prefs);
+
+      expect(service.mode, PerformanceMode.highPerformance);
+      expect(service.enableAmoledBlack, isTrue);
+      expect(service.batterySaver, isFalse);
+    });
   });
 }

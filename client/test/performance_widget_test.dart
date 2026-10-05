@@ -57,5 +57,28 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(controller.performanceService.mode, PerformanceMode.auto);
+
+    // Verify Battery Saver & AMOLED switches are rendered
+    expect(find.text('Энергосбережение батареи'), findsOneWidget);
+    expect(find.text('Super AMOLED глубокий черный'), findsOneWidget);
+
+    final switches = find.byType(Switch);
+    expect(switches, findsNWidgets(2));
+
+    // Toggle Battery Saver switch (first switch)
+    final initialBatterySaver = controller.performanceService.batterySaver;
+    await tester.ensureVisible(switches.at(0));
+    await tester.pumpAndSettle();
+    await tester.tap(switches.at(0));
+    await tester.pumpAndSettle();
+    expect(controller.performanceService.batterySaver, !initialBatterySaver);
+
+    // Toggle AMOLED switch (second switch)
+    final initialAmoled = controller.performanceService.enableAmoledBlack;
+    await tester.ensureVisible(switches.at(1));
+    await tester.pumpAndSettle();
+    await tester.tap(switches.at(1));
+    await tester.pumpAndSettle();
+    expect(controller.performanceService.enableAmoledBlack, !initialAmoled);
   });
 }

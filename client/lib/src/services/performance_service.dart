@@ -32,20 +32,28 @@ class PerformanceService extends ChangeNotifier {
     bool? isLowEndDeviceOverride,
     int? ramMbOverride,
     int? cpuCoresOverride,
+    bool? amoledOverride,
+    bool? batterySaverOverride,
     SharedPreferences? prefs,
   })  : _isLowEndDevice = isLowEndDeviceOverride ?? false,
         _detectedRamMb = ramMbOverride,
-        _detectedCpuCores = cpuCoresOverride ?? Platform.numberOfProcessors {
+        _detectedCpuCores = cpuCoresOverride ?? Platform.numberOfProcessors,
+        _userAmoledChoice = amoledOverride,
+        _userBatterySaverChoice = batterySaverOverride {
     _prefs = prefs;
   }
 
   static const String prefKeyMode = 'maboy_performance_mode';
+  static const String prefKeyAmoled = 'maboy_amoled_black';
+  static const String prefKeyBatterySaver = 'maboy_battery_saver';
 
   SharedPreferences? _prefs;
   PerformanceMode _mode = PerformanceMode.auto;
   bool _isLowEndDevice = false;
   int? _detectedRamMb;
   int _detectedCpuCores = 1;
+  bool? _userAmoledChoice;
+  bool? _userBatterySaverChoice;
   bool _initialized = false;
 
   PerformanceMode get mode => _mode;
@@ -53,6 +61,15 @@ class PerformanceService extends ChangeNotifier {
   int? get detectedRamMb => _detectedRamMb;
   int get detectedCpuCores => _detectedCpuCores;
   bool get isInitialized => _initialized;
+
+  /// True Super AMOLED pure black (#000000) background.
+  /// On Samsung Galaxy J4's Super AMOLED display, black pixels are completely powered off,
+  /// saving 40-50% of the display's battery draw.
+  bool get enableAmoledBlack => _userAmoledChoice ?? isOptimized;
+
+  /// Whether battery saver optimizations (pausing background network polling on screen off,
+  /// adaptive polling intervals) are active. Defaults to true.
+  bool get batterySaver => _userBatterySaverChoice ?? true;
 
   /// Whether performance optimizations (acrylic glass, downscaled glow, static shadows)
   /// are currently active.
@@ -107,7 +124,34 @@ class PerformanceService extends ChangeNotifier {
       }
     }
 
+    _userAmoledChoice = _prefs?.getBool(prefKeyAmoled);
+    _userBatterySaverChoice = _prefs?.getBool(prefKeyBatterySaver);
+
     _initialized = true;
+    notifyListeners();
+  }
+
+  /// Sets the desired performance mode and persists the preference.
+  Future<void> setMode(PerformanceMode mode) async {
+    if (_mode == mode) return;
+    _mode = mode;
+    await _prefs?.setString(prefKeyMode, mode.name);
+    notifyListeners();
+  }
+
+  /// Sets whether Super AMOLED true black background is enabled.
+  Future<void> setAmoledBlack(bool value) async {
+    if (_userAmoledChoice == value) return;
+    _userAmoledChoice = value;
+    await _prefs?.setBool(prefKeyAmoled, value);
+    notifyListeners();
+  }
+
+  /// Sets whether battery saver (pausing background polling) is enabled.
+  Future<void> setBatterySaver(bool value) async {
+    if (_userBatterySaverChoice == value) return;
+    _userBatterySaverChoice = value;
+    await _prefs?.setBool(prefKeyBatterySaver, value);
     notifyListeners();
   }
 
@@ -158,11 +202,5 @@ class PerformanceService extends ChangeNotifier {
     debugPrint('Maboy Performance detected: isLowEnd=$_isLowEndDevice, RAM=$_detectedRamMb MB, Cores=$_detectedCpuCores');
   }
 
-  /// Sets the desired performance mode and persists the preference.
-  Future<void> setMode(PerformanceMode mode) async {
-    if (_mode == mode) return;
-    _mode = mode;
-    await _prefs?.setString(prefKeyMode, mode.name);
-    notifyListeners();
-  }
 }
+

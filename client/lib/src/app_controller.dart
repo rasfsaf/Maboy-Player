@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart' hide RepeatMode;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -53,7 +54,7 @@ class PlaybackQueueEntry {
   final bool isCurrent;
 }
 
-class AppController extends ChangeNotifier {
+class AppController extends ChangeNotifier with WidgetsBindingObserver {
   static const int maxParallelDownloads = 3;
   static const int maxParallelTransfers = 3;
 
@@ -215,6 +216,7 @@ class AppController extends ChangeNotifier {
       notifyListeners();
     });
     performanceService.addListener(notifyListeners);
+    WidgetsBinding.instance.addObserver(this);
     player.onNext = playNext;
     player.onPrevious = playPrevious;
     player.onError = (err) async {
@@ -785,9 +787,49 @@ class AppController extends ChangeNotifier {
     }
   }
 
+  bool _isAppForeground = true;
+  bool get isAppForeground => _isAppForeground;
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      if (!_isAppForeground) {
+        _isAppForeground = true;
+        unawaited(sync());
+        _startPolling();
+      }
+    } else if (state == AppLifecycleState.paused) {
+      if (_isAppForeground) {
+        _isAppForeground = false;
+        _poll?.cancel();
+        _poll = null;
+      }
+    }
+  }
+
   void _startPolling() {
     _poll?.cancel();
-    _poll = Timer.periodic(const Duration(seconds: 8), (_) => sync());
+    _poll = null;
+    if (!_isAppForeground || token == null) return;
+
+    final isSocketConnected = _syncSocket != null;
+    final isBatterySaver = performanceService.batterySaver;
+
+    // Adaptive interval: When WebSocket is active, events are received in realtime.
+    // Suspending polling in background and using 35-60s in foreground saves cellular radio
+    // from staying in high-power DCH mode, drastically cutting battery drain.
+    final int intervalSeconds;
+    if (isSocketConnected) {
+      intervalSeconds = isBatterySaver ? 60 : 35;
+    } else {
+      intervalSeconds = isBatterySaver ? 25 : 15;
+    }
+
+    _poll = Timer.periodic(Duration(seconds: intervalSeconds), (_) {
+      if (_isAppForeground) {
+        sync();
+      }
+    });
   }
 
   Uri _syncUri() {
@@ -812,6 +854,7 @@ class AppController extends ChangeNotifier {
         return;
       }
       _syncSocket = socket;
+      _startPolling();
       _syncHeartbeat?.cancel();
       _syncHeartbeat = Timer.periodic(const Duration(seconds: 20), (_) {
         try {
@@ -870,6 +913,7 @@ class AppController extends ChangeNotifier {
     _syncHeartbeat = null;
     _syncSocket = null;
     _syncReconnect?.cancel();
+    _startPolling();
     if (token != null) {
       _syncReconnect = Timer(const Duration(seconds: 5), _connectSyncEvents);
     }
@@ -2894,6 +2938,7 @@ class AppController extends ChangeNotifier {
     smartSleepService.dispose();
     bassBoostService.dispose();
     performanceService.removeListener(notifyListeners);
+    WidgetsBinding.instance.removeObserver(this);
     playbackManager.dispose();
     ytService.dispose();
     player.dispose();

@@ -28,15 +28,33 @@ class PerformanceSettingsDialog extends StatefulWidget {
 class _PerformanceSettingsDialogState extends State<PerformanceSettingsDialog> {
   late PerformanceMode _currentMode;
 
+  late bool _amoledBlack;
+  late bool _batterySaver;
+
   @override
   void initState() {
     super.initState();
     _currentMode = widget.controller.performanceService.mode;
+    _amoledBlack = widget.controller.performanceService.enableAmoledBlack;
+    _batterySaver = widget.controller.performanceService.batterySaver;
   }
 
   Future<void> _setMode(PerformanceMode mode) async {
-    setState(() => _currentMode = mode);
+    setState(() {
+      _currentMode = mode;
+      _amoledBlack = widget.controller.performanceService.enableAmoledBlack;
+    });
     await widget.controller.performanceService.setMode(mode);
+  }
+
+  Future<void> _toggleAmoledBlack(bool value) async {
+    setState(() => _amoledBlack = value);
+    await widget.controller.performanceService.setAmoledBlack(value);
+  }
+
+  Future<void> _toggleBatterySaver(bool value) async {
+    setState(() => _batterySaver = value);
+    await widget.controller.performanceService.setBatterySaver(value);
   }
 
   @override
@@ -151,6 +169,89 @@ class _PerformanceSettingsDialogState extends State<PerformanceSettingsDialog> {
                 subtitle:
                     'Матовое размытие BackdropFilter и постоянная анимация (для мощных ПК и флагманов).',
                 icon: Icons.blur_on,
+              ),
+
+              const SizedBox(height: 16),
+              const Text(
+                'БАТАРЕЯ И ЭНЕРГОСБЕРЕЖЕНИЕ',
+                style: TextStyle(
+                  color: MaboyColors.textMuted,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2,
+                ),
+              ),
+              const SizedBox(height: 8),
+
+              // Battery Saver Switch
+              Container(
+                decoration: BoxDecoration(
+                  color: MaboyColors.surfaceHigh,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.battery_saver, color: MaboyColors.primary, size: 20),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Энергосбережение батареи',
+                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            'Остановка сетевого поллинга при заблокированном экране.',
+                            style: TextStyle(fontSize: 11, color: MaboyColors.textMuted),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Switch(
+                      value: _batterySaver,
+                      onChanged: _toggleBatterySaver,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 6),
+
+              // Super AMOLED Pure Black Switch
+              Container(
+                decoration: BoxDecoration(
+                  color: MaboyColors.surfaceHigh,
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                child: Row(
+                  children: [
+                    const Icon(Icons.dark_mode, color: MaboyColors.secondary, size: 20),
+                    const SizedBox(width: 12),
+                    const Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Super AMOLED глубокий черный',
+                            style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13),
+                          ),
+                          SizedBox(height: 2),
+                          Text(
+                            '0% расхода дисплея на темных участках экрана J4.',
+                            style: TextStyle(fontSize: 11, color: MaboyColors.textMuted),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Switch(
+                      value: _amoledBlack,
+                      onChanged: _toggleAmoledBlack,
+                    ),
+                  ],
+                ),
               ),
 
               const SizedBox(height: 14),

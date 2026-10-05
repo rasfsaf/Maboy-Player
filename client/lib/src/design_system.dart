@@ -164,37 +164,47 @@ class MaboyBackdrop extends StatelessWidget {
   final Widget child;
 
   @override
-  Widget build(BuildContext context) => Stack(
-    fit: StackFit.expand,
-    children: [
-      const DecoratedBox(
-        decoration: BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Color(0xff202a31),
-              MaboyColors.background,
-              Color(0xff19161f),
-            ],
-            stops: [0, 0.52, 1],
-          ),
-        ),
-      ),
-      const IgnorePointer(
-        child: DecoratedBox(
+  Widget build(BuildContext context) {
+    if (PerformanceService.instance.enableAmoledBlack) {
+      // True pure black (#000000) turns off all OLED pixels on Samsung Galaxy J4 Super AMOLED
+      return ColoredBox(
+        color: Colors.black,
+        child: child,
+      );
+    }
+
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        const DecoratedBox(
           decoration: BoxDecoration(
-            gradient: RadialGradient(
-              center: Alignment(-0.75, -0.85),
-              radius: 1.1,
-              colors: [Color(0x4459d6dc), Colors.transparent],
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Color(0xff202a31),
+                MaboyColors.background,
+                Color(0xff19161f),
+              ],
+              stops: [0, 0.52, 1],
             ),
           ),
         ),
-      ),
-      child,
-    ],
-  );
+        const IgnorePointer(
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              gradient: RadialGradient(
+                center: Alignment(-0.75, -0.85),
+                radius: 1.1,
+                colors: [Color(0x4459d6dc), Colors.transparent],
+              ),
+            ),
+          ),
+        ),
+        child,
+      ],
+    );
+  }
 }
 
 /// Blur belongs on panels, not the whole page, to keep scrolling inexpensive.
@@ -221,12 +231,16 @@ class MaboyGlassPanel extends StatelessWidget {
 
     if (!useBlur) {
       // High-performance acrylic glass styling (0 FBO passes, solid 60 FPS on Mali-T720)
+      final surfaceColor = perf.enableAmoledBlack
+          ? const Color(0xff12151a)
+          : MaboyColors.surfaceHigh;
+
       return ClipRRect(
         borderRadius: BorderRadius.circular(radius),
         child: Container(
           padding: padding,
           decoration: BoxDecoration(
-            color: MaboyColors.surfaceHigh.withValues(
+            color: surfaceColor.withValues(
               alpha: (opacity + 0.12).clamp(0.80, 0.94),
             ),
             borderRadius: BorderRadius.circular(radius),
