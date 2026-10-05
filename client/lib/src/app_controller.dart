@@ -13,6 +13,7 @@ import 'api.dart';
 import 'equalizer.dart';
 import 'services/audio_player.dart';
 import 'services/bounded_task_pool.dart';
+import 'services/equalizer_service.dart';
 import 'services/device_music_service.dart';
 import 'services/local_metadata_service.dart';
 import 'services/media_service.dart';
@@ -163,6 +164,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   String activeEqualizerPresetId = 'flat';
   bool equalizerEnabled = false;
   List<double> equalizerGains = List<double>.filled(6, 0);
+  final EqualizerService equalizerService = EqualizerService();
 
   late final FriendsService friendsService;
   bool get hasPendingFriendNotifications =>
@@ -213,6 +215,10 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     smartSleepService.addListener(notifyListeners);
     bassBoostService.addListener(() {
       unawaited(_applyActiveBassBoost());
+      notifyListeners();
+    });
+    equalizerService.addListener(() {
+      unawaited(_applyActiveEqualizer());
       notifyListeners();
     });
     performanceService.addListener(notifyListeners);
@@ -378,54 +384,17 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       .where((preset) => preset.id == activeEqualizerPresetId)
       .firstOrNull;
 
-  String? get _equalizerDeviceStateKey =>
-      account == null ? null : 'equalizer_device_$account';
-
   Future<void> _loadEqualizerDeviceState(SharedPreferences prefs) async {
-    final key = _equalizerDeviceStateKey;
-    if (key == null) return;
-    final raw = prefs.getString(key);
-    if (raw != null) {
-      try {
-        final state = jsonDecode(raw) as Map<String, dynamic>;
-        equalizerEnabled = state['enabled'] == true;
-        activeEqualizerPresetId = '${state['active_preset_id'] ?? 'flat'}';
-        final rawGains = state['gains'];
-        if (rawGains is List &&
-            rawGains.length == equalizerFrequencies.length) {
-          final parsed = rawGains
-              .map((value) => (value as num).toDouble())
-              .toList();
-          if (parsed.every((gain) => gain >= -12 && gain <= 12)) {
-            equalizerGains = parsed;
-          }
-        }
-      } catch (error) {
-        debugPrint('Ignoring invalid local equalizer state: $error');
-      }
-    }
-    final active = activeEqualizerPreset;
-    if (active != null && activeEqualizerPresetId != 'manual') {
-      equalizerGains = List<double>.from(active.gains);
-    } else if (activeEqualizerPresetId != 'manual') {
-      activeEqualizerPresetId = 'flat';
-      equalizerGains = List<double>.filled(equalizerFrequencies.length, 0);
-    }
-    await player.setEqualizer(enabled: equalizerEnabled, gains: equalizerGains);
+    await equalizerService.init(account);
+    await _applyActiveEqualizer();
   }
 
-  Future<void> _saveEqualizerDeviceState() async {
-    final key = _equalizerDeviceStateKey;
-    if (key == null) return;
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(
-      key,
-      jsonEncode({
-        'enabled': equalizerEnabled,
-        'active_preset_id': activeEqualizerPresetId,
-        'gains': equalizerGains,
-      }),
-    );
+  Future<void> _applyActiveEqualizer() async {
+    final config = equalizerService.resolveEffectiveConfig(playingFolder);
+    equalizerEnabled = config.enabled;
+    activeEqualizerPresetId = config.presetId;
+    equalizerGains = List<double>.from(config.gains);
+    await player.setEqualizer(enabled: config.enabled, gains: equalizerGains);
   }
 
   Future<void> _applyActiveBassBoost() async {
@@ -437,55 +406,65 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     );
   }
 
-  Future<void> setEqualizerEnabled(bool enabled) async {
-    equalizerEnabled = enabled;
-    await player.setEqualizer(enabled: enabled, gains: equalizerGains);
-    await _saveEqualizerDeviceState();
-    notifyListeners();
+  Future<void> setEqualizerEnabled(bool enabled, {String? folderId}) async {
+    final targetScope = folderId ??
+        (equalizerService.hasFolderOverride(playingFolder ?? '')
+            ? playingFolder
+            : null);
+    await equalizerService.setScopeEnabled(targetScope, enabled);
   }
 
-  Future<void> selectEqualizerPreset(String id) async {
+  Future<void> selectEqualizerPreset(String id, {String? folderId}) async {
     final preset = equalizerPresets
         .where((value) => value.id == id)
         .firstOrNull;
     if (preset == null) return;
-    activeEqualizerPresetId = preset.id;
-    equalizerGains = List<double>.from(preset.gains);
-    await player.setEqualizer(enabled: equalizerEnabled, gains: equalizerGains);
-    await _saveEqualizerDeviceState();
-    notifyListeners();
+    final targetScope = folderId ??
+        (equalizerService.hasFolderOverride(playingFolder ?? '')
+            ? playingFolder
+            : null);
+    await equalizerService.setScopePreset(targetScope, preset);
   }
 
-  void setEqualizerBand(int index, double gain) {
+  void setEqualizerBand(int index, double gain, {String? folderId}) {
     if (index < 0 || index >= equalizerGains.length) return;
+    final targetScope = folderId ??
+        (equalizerService.hasFolderOverride(playingFolder ?? '')
+            ? playingFolder
+            : null);
     equalizerGains = List<double>.from(equalizerGains)
       ..[index] = gain.clamp(-12, 12);
     activeEqualizerPresetId = 'manual';
     notifyListeners();
     _equalizerApplyDebounce?.cancel();
     _equalizerApplyDebounce = Timer(const Duration(milliseconds: 70), () {
-      unawaited(
-        player
-            .setEqualizer(enabled: equalizerEnabled, gains: equalizerGains)
-            .then((_) => _saveEqualizerDeviceState()),
-      );
+      unawaited(equalizerService.setScopeBand(targetScope, index, gain));
     });
   }
 
-  Future<String> saveEqualizerPreset(String name, {String? id}) async {
+  Future<String> saveEqualizerPreset(
+    String name, {
+    String? id,
+    String? folderId,
+  }) async {
     final cleanName = name.trim();
     if (cleanName.isEmpty || cleanName.length > 40) {
       throw ArgumentError('Название должно содержать от 1 до 40 символов');
     }
+    final targetGains = folderId != null
+        ? equalizerService.resolveEffectiveConfig(folderId).gains
+        : equalizerGains;
     final preset = EqualizerPreset(
       id: id ?? newId(),
       name: cleanName,
-      gains: List<double>.from(equalizerGains),
+      gains: List<double>.from(targetGains),
     );
     await mutate('equalizer.preset.upsert', preset.toPayload());
-    activeEqualizerPresetId = preset.id;
-    await _saveEqualizerDeviceState();
-    notifyListeners();
+    final targetScope = folderId ??
+        (equalizerService.hasFolderOverride(playingFolder ?? '')
+            ? playingFolder
+            : null);
+    await equalizerService.setScopePreset(targetScope, preset);
     return preset.id;
   }
 
@@ -630,6 +609,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       _currentPlaybackIndex = 0;
       playingFolder = scopeFolder;
       unawaited(_applyActiveBassBoost());
+      unawaited(_applyActiveEqualizer());
 
       if (!player.playing && player.audioSource != null) {
         await player.play();
@@ -1946,6 +1926,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       playingId = id;
       playingFolder = folderId;
       unawaited(_applyActiveBassBoost());
+      unawaited(_applyActiveEqualizer());
       if (isShuffle && playbackIndex == null) {
         final scopeFolder = folderId ?? playingFolder;
         List<String> pool;
@@ -2667,6 +2648,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     await smartSleepService.load();
     await bassBoostService.init();
     await _applyActiveBassBoost();
+    await _applyActiveEqualizer();
     await storageService.init();
     await performanceService.init();
     final prefs = await SharedPreferences.getInstance();
@@ -2907,6 +2889,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     _relayRetryTimers.clear();
     _relayAttempts.clear();
     _failedRelayTransfers.clear();
+    await equalizerService.reset();
     equalizerEnabled = false;
     activeEqualizerPresetId = 'flat';
     equalizerGains = List<double>.filled(equalizerFrequencies.length, 0);
@@ -3063,11 +3046,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         customEqualizerPresets[preset.id] = preset;
         if (activeEqualizerPresetId == preset.id) {
           equalizerGains = List<double>.from(preset.gains);
-          unawaited(
-            player
-                .setEqualizer(enabled: equalizerEnabled, gains: equalizerGains)
-                .then((_) => _saveEqualizerDeviceState()),
-          );
+          unawaited(selectEqualizerPreset(preset.id));
         }
       } catch (error) {
         debugPrint('Ignoring invalid synchronized equalizer preset: $error');
@@ -3076,13 +3055,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
       final id = '${p['id'] ?? ''}';
       customEqualizerPresets.remove(id);
       if (activeEqualizerPresetId == id) {
-        activeEqualizerPresetId = 'flat';
-        equalizerGains = List<double>.filled(equalizerFrequencies.length, 0);
-        unawaited(
-          player
-              .setEqualizer(enabled: equalizerEnabled, gains: equalizerGains)
-              .then((_) => _saveEqualizerDeviceState()),
-        );
+        unawaited(selectEqualizerPreset('flat'));
       }
     }
     if (notify) {
