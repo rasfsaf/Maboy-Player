@@ -390,20 +390,28 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _applyActiveEqualizer() async {
-    final config = equalizerService.resolveEffectiveConfig(playingFolder);
-    equalizerEnabled = config.enabled;
-    activeEqualizerPresetId = config.presetId;
-    equalizerGains = List<double>.from(config.gains);
-    await player.setEqualizer(enabled: config.enabled, gains: equalizerGains);
+    try {
+      final config = equalizerService.resolveEffectiveConfig(playingFolder);
+      equalizerEnabled = config.enabled;
+      activeEqualizerPresetId = config.presetId;
+      equalizerGains = List<double>.from(config.gains);
+      await player.setEqualizer(enabled: config.enabled, gains: equalizerGains);
+    } catch (e, st) {
+      debugPrint('Failed to apply active equalizer: $e\n$st');
+    }
   }
 
   Future<void> _applyActiveBassBoost() async {
-    final config = bassBoostService.resolveEffectiveConfig(playingFolder);
-    await player.setBassBoost(
-      enabled: config.enabled,
-      frequency: config.frequency,
-      gainDb: config.gainDb,
-    );
+    try {
+      final config = bassBoostService.resolveEffectiveConfig(playingFolder);
+      await player.setBassBoost(
+        enabled: config.enabled,
+        frequency: config.frequency,
+        gainDb: config.gainDb,
+      );
+    } catch (e, st) {
+      debugPrint('Failed to apply active bass boost: $e\n$st');
+    }
   }
 
   Future<void> setEqualizerEnabled(bool enabled, {String? folderId}) async {

@@ -23,7 +23,11 @@ class _BassBoostSectionState extends State<BassBoostSection> {
   void initState() {
     super.initState();
     // Default to the currently playing playlist if active, otherwise global.
-    _selectedPlaylistId = widget.controller.playingFolder;
+    final playing = widget.controller.playingFolder;
+    _selectedPlaylistId = (playing != null &&
+            widget.controller.playlists.any((p) => p['id'] == playing))
+        ? playing
+        : null;
     final initialConfig = _resolveCurrentConfig();
     _freqController =
         TextEditingController(text: _formatFreq(initialConfig.frequency));
@@ -62,7 +66,13 @@ class _BassBoostSectionState extends State<BassBoostSection> {
     if (!_freqFocusNode.hasFocus) {
       final text = _freqController.text.trim();
       final parsed = double.tryParse(text);
-      if (parsed == null || parsed < 0) {
+      if (parsed != null) {
+        final clamped = parsed < 20.0 ? 20.0 : (parsed > 20000.0 ? 20000.0 : parsed);
+        final bassService = widget.controller.bassBoostService;
+        final isGlobal = _selectedPlaylistId == null;
+        final currentConfig = _resolveCurrentConfig();
+        _applyFrequency(bassService, isGlobal, currentConfig, clamped);
+      } else {
         final config = _resolveCurrentConfig();
         _freqController.text = _formatFreq(config.frequency);
       }
@@ -75,7 +85,7 @@ class _BassBoostSectionState extends State<BassBoostSection> {
     BassBoostConfig currentConfig,
     double freq,
   ) {
-    final validFreq = freq < 0 ? 0.0 : freq;
+    final validFreq = freq < 20.0 ? 20.0 : (freq > 20000.0 ? 20000.0 : freq);
     _freqController.text = _formatFreq(validFreq);
     _updateConfig(
       bassService,
@@ -92,6 +102,10 @@ class _BassBoostSectionState extends State<BassBoostSection> {
     return ListenableBuilder(
       listenable: Listenable.merge([c, bassService]),
       builder: (context, _) {
+        if (_selectedPlaylistId != null &&
+            !c.playlists.any((p) => p['id'] == _selectedPlaylistId)) {
+          _selectedPlaylistId = null;
+        }
         final isGlobal = _selectedPlaylistId == null;
         final hasOverride =
             !isGlobal && bassService.hasPlaylistOverride(_selectedPlaylistId!);
@@ -402,7 +416,7 @@ class _BassBoostSectionState extends State<BassBoostSection> {
                                 ),
                                 const SizedBox(height: 2),
                                 const Text(
-                                  'Порог среза (любое значение от 0 Гц)',
+                                  'Порог среза (от 20 Гц)',
                                   style: TextStyle(fontSize: 11, color: MaboyColors.textMuted),
                                 ),
                               ],
@@ -439,7 +453,7 @@ class _BassBoostSectionState extends State<BassBoostSection> {
                                           horizontal: 8,
                                           vertical: 10,
                                         ),
-                                        hintText: '0',
+                                        hintText: '20-20000',
                                         suffixText: ' Hz',
                                         suffixStyle: TextStyle(
                                           fontSize: 12,
@@ -449,7 +463,7 @@ class _BassBoostSectionState extends State<BassBoostSection> {
                                       ),
                                       onChanged: (text) {
                                         final parsed = double.tryParse(text.trim());
-                                        if (parsed != null && parsed >= 0) {
+                                        if (parsed != null && parsed >= 20.0 && parsed <= 20000.0) {
                                           _updateConfig(
                                             bassService,
                                             isGlobal,
@@ -459,12 +473,15 @@ class _BassBoostSectionState extends State<BassBoostSection> {
                                       },
                                       onSubmitted: (text) {
                                         final parsed = double.tryParse(text.trim());
-                                        if (parsed != null && parsed >= 0) {
+                                        if (parsed != null) {
+                                          final clamped = parsed < 20.0
+                                              ? 20.0
+                                              : (parsed > 20000.0 ? 20000.0 : parsed);
                                           _applyFrequency(
                                             bassService,
                                             isGlobal,
                                             currentConfig,
-                                            parsed,
+                                            clamped,
                                           );
                                         } else {
                                           _applyFrequency(
@@ -492,9 +509,9 @@ class _BassBoostSectionState extends State<BassBoostSection> {
                                     color: MaboyColors.surfaceHigh,
                                     itemBuilder: (context) => [
                                       const PopupMenuItem<double>(
-                                        value: 0.0,
+                                        value: 20.0,
                                         child: Text(
-                                          '0 Hz (Без среза / 0 Гц)',
+                                          '20 Hz (Саб-бас / 20 Гц)',
                                           style: TextStyle(fontWeight: FontWeight.w700),
                                         ),
                                       ),
@@ -539,7 +556,7 @@ class _BassBoostSectionState extends State<BassBoostSection> {
                         child: Wrap(
                           spacing: 6,
                           runSpacing: 6,
-                          children: [0.0, 50.0, 80.0, 100.0, 150.0, 200.0].map((f) {
+                          children: [20.0, 50.0, 80.0, 100.0, 150.0, 200.0].map((f) {
                             final isSelected = currentConfig.frequency == f;
                             return InkWell(
                               borderRadius: BorderRadius.circular(4),
@@ -563,7 +580,7 @@ class _BassBoostSectionState extends State<BassBoostSection> {
                                   borderRadius: BorderRadius.circular(4),
                                 ),
                                 child: Text(
-                                  f == 0 ? '0 Hz' : '${f.toInt()} Hz',
+                                  '${f.toInt()} Hz',
                                   style: TextStyle(
                                     fontSize: 10,
                                     fontWeight:

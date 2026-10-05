@@ -20,7 +20,7 @@ void main() {
       controller.dispose();
     });
 
-    testWidgets('allows setting arbitrary frequency and setting 0 Hz via input and chips', (tester) async {
+    testWidgets('allows setting arbitrary frequency and clamps sub-20 Hz to 20 Hz via input and chips', (tester) async {
       await tester.pumpWidget(
         MaterialApp(
           theme: buildMaboyTheme(),
@@ -52,12 +52,13 @@ void main() {
 
       expect(controller.bassBoostService.globalConfig.frequency, 64.0);
 
-      // Enter 0 Hz directly
+      // Enter 0 Hz directly -> clamped to safe 20 Hz minimum
       await tester.enterText(textFieldFinder, '0');
       await tester.testTextInput.receiveAction(TextInputAction.done);
       await tester.pumpAndSettle();
 
-      expect(controller.bassBoostService.globalConfig.frequency, 0.0);
+      expect(controller.bassBoostService.globalConfig.frequency, 20.0);
+      expect(tester.widget<TextField>(textFieldFinder).controller!.text, '20');
 
       // Tap 50 Hz quick chip
       final chip50 = find.text('50 Hz');
@@ -68,14 +69,14 @@ void main() {
       expect(controller.bassBoostService.globalConfig.frequency, 50.0);
       expect(tester.widget<TextField>(textFieldFinder).controller!.text, '50');
 
-      // Tap 0 Hz quick chip
-      final chip0 = find.text('0 Hz');
-      expect(chip0, findsOneWidget);
-      await tester.tap(chip0);
+      // Tap 20 Hz quick chip
+      final chip20 = find.text('20 Hz');
+      expect(chip20, findsOneWidget);
+      await tester.tap(chip20);
       await tester.pumpAndSettle();
 
-      expect(controller.bassBoostService.globalConfig.frequency, 0.0);
-      expect(tester.widget<TextField>(textFieldFinder).controller!.text, '0');
+      expect(controller.bassBoostService.globalConfig.frequency, 20.0);
+      expect(tester.widget<TextField>(textFieldFinder).controller!.text, '20');
     });
   });
 }

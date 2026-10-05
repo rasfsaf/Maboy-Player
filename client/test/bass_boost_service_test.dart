@@ -32,19 +32,32 @@ void main() {
       expect(restored, equals(original));
     });
 
-    test('supports setting frequency to 0.0 Hz and serializes correctly', () {
-      const zeroFreq = BassBoostConfig(
+    test('supports setting frequency down to 20.0 Hz sub-bass limit and serializes correctly', () {
+      const subBassFreq = BassBoostConfig(
         enabled: true,
-        frequency: 0.0,
+        frequency: 20.0,
         gainDb: 15.0,
       );
-      final json = zeroFreq.toJson();
+      final json = subBassFreq.toJson();
       final restored = BassBoostConfig.fromJson(json);
 
       expect(restored.enabled, isTrue);
-      expect(restored.frequency, 0.0);
+      expect(restored.frequency, 20.0);
       expect(restored.gainDb, 15.0);
-      expect(restored, equals(zeroFreq));
+      expect(restored, equals(subBassFreq));
+    });
+
+    test('safely migrates legacy invalid frequency (< 20 Hz) to safe default', () {
+      final legacyJson = {
+        'enabled': true,
+        'frequency': 0.0,
+        'gainDb': 15.0,
+      };
+      final restored = BassBoostConfig.fromJson(legacyJson);
+
+      expect(restored.enabled, isTrue);
+      expect(restored.frequency, 150.0);
+      expect(restored.gainDb, 15.0);
     });
 
     test('supports arbitrary custom frequency values', () {
@@ -159,24 +172,24 @@ void main() {
       expect(resolved.gainDb, 6.0);
     });
 
-    test('persists frequency of 0.0 Hz across service re-initialization', () async {
+    test('persists frequency of 20.0 Hz across service re-initialization', () async {
       final service1 = BassBoostService();
       await service1.init();
       await service1.setGlobalConfig(
-        const BassBoostConfig(enabled: true, frequency: 0.0, gainDb: 18.0),
+        const BassBoostConfig(enabled: true, frequency: 20.0, gainDb: 18.0),
       );
       await service1.setPlaylistConfig(
         'folder-deep',
-        const BassBoostConfig(enabled: true, frequency: 0.0, gainDb: 24.0),
+        const BassBoostConfig(enabled: true, frequency: 20.0, gainDb: 24.0),
       );
 
       final service2 = BassBoostService();
       await service2.init();
 
-      expect(service2.globalConfig.frequency, 0.0);
+      expect(service2.globalConfig.frequency, 20.0);
       expect(service2.globalConfig.gainDb, 18.0);
       final playlistConfig = service2.resolveEffectiveConfig('folder-deep');
-      expect(playlistConfig.frequency, 0.0);
+      expect(playlistConfig.frequency, 20.0);
       expect(playlistConfig.gainDb, 24.0);
     });
   });

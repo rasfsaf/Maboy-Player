@@ -329,57 +329,61 @@ class MaboyAudioPlayer {
     required double gainDb,
   }) async {
     _bassBoostEnabled = enabled;
-    _bassBoostFrequency = frequency < 0 ? 0.0 : frequency;
+    _bassBoostFrequency = frequency < 20.0 ? 20.0 : (frequency > 20000.0 ? 20000.0 : frequency);
     _bassBoostGain = gainDb.clamp(0, 24);
     final player = _native;
     if (player != null) await _applyAudioEffects(player);
   }
 
   Future<void> _applyAudioEffects(mpv.Player player) async {
-    mpv.FirequalizerSettings? firequalizer;
-    if (_equalizerEnabled) {
-      const frequencies = [60, 150, 400, 1000, 2400, 15000];
-      final entries = List.generate(
-        frequencies.length,
-        (index) => 'entry(${frequencies[index]},${_equalizerGains[index]})',
-      ).join(';');
-      firequalizer = mpv.FirequalizerSettings(
-        enabled: true,
-        gain: 'gain_interpolate(f)',
-        gain_entry: entries,
-        zero_phase: true,
+    try {
+      mpv.FirequalizerSettings? firequalizer;
+      if (_equalizerEnabled) {
+        const frequencies = [60, 150, 400, 1000, 2400, 15000];
+        final entries = List.generate(
+          frequencies.length,
+          (index) => 'entry(${frequencies[index]},${_equalizerGains[index]})',
+        ).join(';');
+        firequalizer = mpv.FirequalizerSettings(
+          enabled: true,
+          gain: 'gain_interpolate(f)',
+          gain_entry: entries,
+          zero_phase: true,
+        );
+      }
+
+      mpv.BassSettings? bass;
+      if (_bassBoostEnabled && _bassBoostGain > 0) {
+        bass = mpv.BassSettings(
+          enabled: true,
+          frequency: _bassBoostFrequency,
+          gain: _bassBoostGain,
+        );
+      }
+
+      if (firequalizer == null && bass == null) {
+        await player.setAudioEffects(const mpv.AudioEffects());
+        await player.setVolumeGain(0);
+        return;
+      }
+
+      await player.setAudioEffects(
+        mpv.AudioEffects(
+          firequalizer: firequalizer,
+          bass: bass,
+        ),
       );
+
+      final eqMaxBoost = _equalizerEnabled
+          ? _equalizerGains.fold<double>(0, (a, b) => a > b ? a : b)
+          : 0.0;
+      final bassBoost =
+          (_bassBoostEnabled && _bassBoostGain > 0) ? _bassBoostGain : 0.0;
+      final totalBoost = math.max(eqMaxBoost, bassBoost);
+      await player.setVolumeGain(-totalBoost.clamp(0, 18).toDouble());
+    } catch (e, st) {
+      debugPrint('Failed to apply audio effects safely: $e\n$st');
     }
-
-    mpv.BassSettings? bass;
-    if (_bassBoostEnabled && _bassBoostGain > 0) {
-      bass = mpv.BassSettings(
-        enabled: true,
-        frequency: _bassBoostFrequency,
-        gain: _bassBoostGain,
-      );
-    }
-
-    if (firequalizer == null && bass == null) {
-      await player.setAudioEffects(const mpv.AudioEffects());
-      await player.setVolumeGain(0);
-      return;
-    }
-
-    await player.setAudioEffects(
-      mpv.AudioEffects(
-        firequalizer: firequalizer,
-        bass: bass,
-      ),
-    );
-
-    final eqMaxBoost = _equalizerEnabled
-        ? _equalizerGains.fold<double>(0, (a, b) => a > b ? a : b)
-        : 0.0;
-    final bassBoost =
-        (_bassBoostEnabled && _bassBoostGain > 0) ? _bassBoostGain : 0.0;
-    final totalBoost = math.max(eqMaxBoost, bassBoost);
-    await player.setVolumeGain(-totalBoost.clamp(0, 18).toDouble());
   }
 
   /// Changes the output channel layout. Defaults to [mpv.Channels.stereo] so
