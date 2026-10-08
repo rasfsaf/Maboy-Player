@@ -245,6 +245,40 @@ subprojects {
                         mediaManagerFile.writeText(content)
                         println("[Maboy] Patched MediaSessionManager.kt for headphone multi-click controls")
                     }
+                    if (content.contains("private fun disable()")) {
+                        content = content.replace("private fun disable()", "internal fun disable()")
+                        mediaManagerFile.writeText(content)
+                        println("[Maboy] Patched MediaSessionManager.kt for internal disable")
+                    }
+                }
+
+                val mediaServiceFile = file("src/main/kotlin/com/alesdrnz/mpv_audio_kit/media_session/MpvMediaSessionService.kt")
+                if (mediaServiceFile.exists()) {
+                    var content = mediaServiceFile.readText()
+                    if (!content.contains("killProcess")) {
+                        val pattern = Regex("""override\s+fun\s+onTaskRemoved[\s\S]*?super\.onTaskRemoved\(rootIntent\)[\s\S]*?\}""")
+                        val newOnTaskRemoved = """override fun onTaskRemoved(rootIntent: Intent?) {
+        try {
+            MediaSessionManager.disable()
+        } catch (_: Exception) {}
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 24) {
+                stopForeground(STOP_FOREGROUND_REMOVE)
+            } else {
+                @Suppress("DEPRECATION")
+                stopForeground(true)
+            }
+        } catch (_: Exception) {}
+        stopSelf()
+        super.onTaskRemoved(rootIntent)
+        try {
+            android.os.Process.killProcess(android.os.Process.myPid())
+        } catch (_: Exception) {}
+    }"""
+                        content = pattern.replace(content, newOnTaskRemoved)
+                        mediaServiceFile.writeText(content)
+                        println("[Maboy] Patched MpvMediaSessionService.kt for cleanup onTaskRemoved")
+                    }
                 }
             } catch (e: Exception) {
                 println("[Maboy] Note: mpv_audio_kit patch check: " + e.message)

@@ -164,6 +164,8 @@ class MaboyAudioPlayer {
             );
             unawaited(player.pause());
           }
+        } else if (command is mpv.MediaSessionCommandStop) {
+          unawaited(pause());
         }
       }),
     ]);
