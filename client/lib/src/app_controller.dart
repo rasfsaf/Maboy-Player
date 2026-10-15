@@ -1384,11 +1384,16 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     transferStatus = 'Получение метаданных YouTube...';
     notifyListeners();
 
-    final meta = await ytService.getMetadata(videoId);
-    final id = newId();
-    final rawTitle = (customTitle != null && customTitle.trim().isNotEmpty)
+    final candidateTitle = (customTitle != null && customTitle.trim().isNotEmpty)
         ? customTitle.trim()
-        : (meta?.title ?? 'YouTube Audio');
+        : YouTubeDownloadService.extractTitleCandidate(urlInput);
+
+    final meta = await ytService.getMetadata(
+      videoId,
+      api: token != null ? api : null,
+    );
+    final id = newId();
+    final rawTitle = candidateTitle ?? (meta?.title ?? 'YouTube Audio');
     final rawArtist = meta?.author ?? 'YouTube';
     final formatted = TrackFormatter.split(
       rawTitle: rawTitle,
@@ -1457,6 +1462,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         localFiles[id] = existingFile.path;
         failedDownloads.remove(id);
         await _saveFiles();
+        await _healTrackIfFallback(track, existingFile);
         _showTemporaryTransferStatus('MP3 скачан: ${track['title']}');
         return;
       }
@@ -1521,6 +1527,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         }
 
         await _saveFiles();
+        await _healTrackIfFallback(track, result.file!);
         _showTemporaryTransferStatus('MP3 скачан: ${track['title']}');
       } else {
         final err = result.errorMessage ?? 'Не удалось получить аудиопоток';
@@ -1575,8 +1582,31 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  Future<void> handleIncomingShare(String sharedText) async {
-    final trackId = await addYouTubeTrack(sharedText);
+  Future<void> _healTrackIfFallback(Map<String, dynamic> track, File file) async {
+    final title = track['title'] as String? ?? '';
+    if (title.trim().isEmpty || title == 'YouTube Audio') {
+      final healed = await ytService.healMetadata(
+        track,
+        audioFile: file,
+        api: token != null ? api : null,
+      );
+      if (healed != null) {
+        await mutate('track.upsert', healed);
+      }
+    }
+  }
+
+  Future<void> handleIncomingShare(
+    String sharedText, {
+    String? customTitle,
+  }) async {
+    final title = (customTitle != null && customTitle.trim().isNotEmpty)
+        ? customTitle.trim()
+        : YouTubeDownloadService.extractTitleCandidate(sharedText);
+    final trackId = await addYouTubeTrack(
+      sharedText,
+      customTitle: title,
+    );
     if (trackId != null) {
       final track = tracks.where((t) => t['id'] == trackId).firstOrNull;
       if (track != null) {

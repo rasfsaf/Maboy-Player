@@ -34,8 +34,8 @@ void main() async {
   final controller = AppController();
   await controller.load();
   ShareService.init(
-    onShare: (sharedText) {
-      controller.handleIncomingShare(sharedText);
+    onShare: (sharedText, {title}) {
+      controller.handleIncomingShare(sharedText, customTitle: title);
     },
   );
   runApp(MaboyApp(controller: controller));

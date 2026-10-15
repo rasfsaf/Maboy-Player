@@ -93,8 +93,45 @@ void main() {
       ),
       'dQw4w9WgXcQ',
     );
+    expect(
+      YouTubeDownloadService.extractVideoId(
+        'https://music.youtube.com/watch?v=dQw4w9WgXcQ',
+      ),
+      'dQw4w9WgXcQ',
+    );
+    expect(
+      YouTubeDownloadService.extractVideoId(
+        'https://www.youtube.com/live/dQw4w9WgXcQ',
+      ),
+      'dQw4w9WgXcQ',
+    );
+    expect(
+      YouTubeDownloadService.extractVideoId(
+        'Rick Astley - Never Gonna Give You Up\nhttps://youtu.be/dQw4w9WgXcQ?si=abc',
+      ),
+      'dQw4w9WgXcQ',
+    );
     expect(YouTubeDownloadService.extractVideoId('dQw4w9WgXcQ'), 'dQw4w9WgXcQ');
     expect(YouTubeDownloadService.extractVideoId('https://google.com'), isNull);
+  });
+
+  test('YouTube title candidate extraction from share text', () {
+    expect(
+      YouTubeDownloadService.extractTitleCandidate(
+        'Rick Astley - Never Gonna Give You Up\nhttps://youtu.be/dQw4w9WgXcQ?si=abc',
+      ),
+      'Rick Astley - Never Gonna Give You Up',
+    );
+    expect(
+      YouTubeDownloadService.extractTitleCandidate(
+        'Watch "Rick Astley - Never Gonna Give You Up" on YouTube: https://youtu.be/dQw4w9WgXcQ',
+      ),
+      'Rick Astley - Never Gonna Give You Up',
+    );
+    expect(
+      YouTubeDownloadService.extractTitleCandidate('https://youtu.be/dQw4w9WgXcQ'),
+      isNull,
+    );
   });
 
   test('yt-dlp rotated cookies error is actionable', () {

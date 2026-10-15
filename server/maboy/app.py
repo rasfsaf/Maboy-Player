@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 from .db import Base, engine, get_db, SessionLocal
 from . import friends as friends_api
 from .models import FavoriteTrack, Operation, Playlist, PlaylistTrack, QueueItem, Token, Track, TrackShare, User
-from .youtube_media import YouTubeDownloadError, ensure_youtube_audio
+from .youtube_media import YouTubeDownloadError, ensure_youtube_audio, fetch_youtube_metadata
 
 # In-memory routing only: audio bytes are never persisted on the gateway.
 # A disconnected sender can reconnect; the receiver can retry indefinitely.
@@ -642,6 +642,18 @@ async def youtube_audio(
         media_type="audio/mpeg",
         filename=f"{track.id}.mp3",
     )
+
+
+@app.get("/youtube/metadata")
+async def youtube_metadata(
+    video_id: str,
+    user: User = Depends(current_user),
+):
+    trimmed = video_id.strip()
+    meta = await fetch_youtube_metadata(trimmed)
+    if meta is None:
+        raise HTTPException(404, "Metadata not found")
+    return meta
 
 
 @app.put("/account/nickname")

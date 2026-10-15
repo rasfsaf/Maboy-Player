@@ -1,20 +1,19 @@
 import 'dart:io';
 import 'package:flutter/services.dart';
 
+typedef ShareCallback = void Function(String text, {String? title});
+
 class ShareService {
   static const MethodChannel _channel = MethodChannel('com.maboy.player/share');
-  static void Function(String text)? _onShareReceived;
+  static ShareCallback? _onShareReceived;
 
-  static void init({required void Function(String text) onShare}) {
+  static void init({required ShareCallback onShare}) {
     _onShareReceived = onShare;
     if (!Platform.isAndroid) return;
 
     _channel.setMethodCallHandler((call) async {
       if (call.method == 'onSharedText') {
-        final text = call.arguments as String?;
-        if (text != null && text.trim().isNotEmpty) {
-          _onShareReceived?.call(text.trim());
-        }
+        _dispatch(call.arguments);
       }
     });
 
@@ -22,11 +21,23 @@ class ShareService {
     _checkInitialShare();
   }
 
+  static void _dispatch(dynamic arguments) {
+    if (arguments is Map) {
+      final text = arguments['text'] as String?;
+      final subject = arguments['subject'] as String?;
+      if (text != null && text.trim().isNotEmpty) {
+        _onShareReceived?.call(text.trim(), title: subject?.trim());
+      }
+    } else if (arguments is String && arguments.trim().isNotEmpty) {
+      _onShareReceived?.call(arguments.trim());
+    }
+  }
+
   static Future<void> _checkInitialShare() async {
     try {
-      final initial = await _channel.invokeMethod<String>('getInitialShare');
-      if (initial != null && initial.trim().isNotEmpty) {
-        _onShareReceived?.call(initial.trim());
+      final initial = await _channel.invokeMethod<dynamic>('getInitialShare');
+      if (initial != null) {
+        _dispatch(initial);
       }
     } catch (_) {}
   }

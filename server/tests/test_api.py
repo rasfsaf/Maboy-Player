@@ -607,3 +607,28 @@ def test_friend_pipeline_and_websocket_notification(client):
             assert alice_notify["type"] == "friend_accepted"
             assert alice_notify["friend_nickname"] == "bob"
 
+
+
+def test_youtube_metadata_endpoint(client, monkeypatch):
+    alice = register(client, "yt-meta-user@example.com")
+
+    async def fake_meta(video_id: str):
+        if video_id == "dQw4w9WgXcQ":
+            return {
+                "title": "Rick Astley - Never Gonna Give You Up",
+                "author": "Rick Astley",
+                "thumbnail_url": "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+                "duration_ms": 213000,
+            }
+        return None
+
+    monkeypatch.setattr("maboy.app.fetch_youtube_metadata", fake_meta)
+
+    resp = client.get("/youtube/metadata?video_id=dQw4w9WgXcQ", headers=alice)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["title"] == "Rick Astley - Never Gonna Give You Up"
+    assert data["author"] == "Rick Astley"
+
+    not_found = client.get("/youtube/metadata?video_id=unknownvideo", headers=alice)
+    assert not_found.status_code == 404

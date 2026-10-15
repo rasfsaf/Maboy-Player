@@ -33,6 +33,11 @@ class YouTubePlaylistService {
       return trimmed;
     }
 
+    final match = RegExp(r'[?&]list=([a-zA-Z0-9_-]+)').firstMatch(trimmed);
+    if (match != null) {
+      return match.group(1);
+    }
+
     final uri = Uri.tryParse(trimmed);
     if (uri != null) {
       final listParam = uri.queryParameters['list'];

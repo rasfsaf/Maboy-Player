@@ -27,7 +27,7 @@ class MainActivity : FlutterActivity() {
     private val mediaChannelName = "com.maboy.player/media"
     private var shareChannel: MethodChannel? = null
     private var mediaChannel: MethodChannel? = null
-    private var initialSharedText: String? = null
+    private var initialSharedData: Any? = null
 
     private var permissionCallback: MethodChannel.Result? = null
     private val PERMISSION_REQUEST_CODE = 1002
@@ -265,9 +265,9 @@ class MainActivity : FlutterActivity() {
         shareCh.setMethodCallHandler { call, result ->
             when (call.method) {
                 "getInitialShare" -> {
-                    val text = initialSharedText
-                    initialSharedText = null
-                    result.success(text)
+                    val data = initialSharedData
+                    initialSharedData = null
+                    result.success(data)
                 }
                 else -> result.notImplemented()
             }
@@ -298,8 +298,8 @@ class MainActivity : FlutterActivity() {
         }
 
         // If an intent arrived before engine configuration, dispatch it now
-        initialSharedText?.let { text ->
-            shareCh.invokeMethod("onSharedText", text)
+        initialSharedData?.let { data ->
+            shareCh.invokeMethod("onSharedText", data)
         }
 
         val sleepChannel = EventChannel(flutterEngine.dartExecutor.binaryMessenger, sleepEventsChannelName)
@@ -462,12 +462,18 @@ class MainActivity : FlutterActivity() {
         if (intent == null) return
         if (Intent.ACTION_SEND == intent.action && "text/plain" == intent.type) {
             val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
+            val subject = intent.getStringExtra(Intent.EXTRA_SUBJECT)
             if (!sharedText.isNullOrBlank()) {
+                val payload: Any = if (!subject.isNullOrBlank()) {
+                    mapOf("text" to sharedText, "subject" to subject)
+                } else {
+                    sharedText
+                }
                 val channel = shareChannel
                 if (channel != null) {
-                    channel.invokeMethod("onSharedText", sharedText)
+                    channel.invokeMethod("onSharedText", payload)
                 } else {
-                    initialSharedText = sharedText
+                    initialSharedData = payload
                 }
             }
         }

@@ -1,3 +1,6 @@
+import json
+import urllib.request
+from typing import Any
 import asyncio
 import base64
 import logging
@@ -190,6 +193,7 @@ async def ensure_youtube_audio(video_id: str) -> Path:
             args.extend(
                 (
                     "--no-playlist",
+                    "--embed-metadata",
                     "-x",
                     "--audio-format",
                     "mp3",
@@ -261,3 +265,69 @@ async def ensure_youtube_audio(video_id: str) -> Path:
             await _promote_cookie_copy(task_cookie, cache_dir)
             _prune_cache(cache_dir, protected=target)
             return target
+
+
+async def fetch_youtube_metadata(video_id: str) -> dict[str, Any] | None:
+    if not _VIDEO_ID.fullmatch(video_id):
+        return None
+
+    def _fetch_oembed() -> dict[str, Any] | None:
+        try:
+            url = f"https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v={video_id}&format=json"
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=6) as response:
+                if response.status == 200:
+                    data = json.loads(response.read().decode("utf-8"))
+                    title = data.get("title")
+                    if title:
+                        return {
+                            "title": title.strip(),
+                            "author": (data.get("author_name") or "YouTube").strip(),
+                            "thumbnail_url": data.get("thumbnail_url"),
+                            "duration_ms": None,
+                        }
+        except Exception:
+            pass
+        return None
+
+    oembed_meta = await asyncio.to_thread(_fetch_oembed)
+    if oembed_meta:
+        return oembed_meta
+
+    try:
+        task_cookie = _cookie_file()
+        args = [
+            "yt-dlp",
+            "--js-runtimes",
+            "node:/usr/local/bin/node",
+            "--remote-components",
+            "ejs:github",
+            "--no-playlist",
+            "--dump-json",
+        ]
+        if task_cookie.is_file():
+            args.extend(("--cookies", str(task_cookie)))
+        args.append(f"https://www.youtube.com/watch?v={video_id}")
+
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=15)
+        if proc.returncode == 0 and stdout:
+            data = json.loads(stdout.decode("utf-8", errors="replace"))
+            title = data.get("title")
+            if title:
+                duration = data.get("duration")
+                duration_ms = int(duration * 1000) if duration else None
+                return {
+                    "title": title.strip(),
+                    "author": (data.get("uploader") or "YouTube").strip(),
+                    "thumbnail_url": data.get("thumbnail"),
+                    "duration_ms": duration_ms,
+                }
+    except Exception:
+        pass
+
+    return None

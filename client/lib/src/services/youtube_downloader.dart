@@ -4,6 +4,9 @@ import 'dart:io';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
 import 'captcha_solver_service.dart';
+import '../api.dart';
+import 'local_metadata_service.dart';
+import 'track_formatter.dart';
 
 class YouTubeMetadata {
   YouTubeMetadata({
@@ -52,7 +55,7 @@ class YouTubeStreamResult {
 }
 
 abstract class YouTubeProvider {
-  Future<YouTubeMetadata?> getMetadata(String videoId);
+  Future<YouTubeMetadata?> getMetadata(String videoId, {SyncApi? api});
   Future<String?> getStreamUrl(String videoId);
   Future<YouTubeStreamResult> getStreamResult(String videoId);
   Future<File?> downloadMp3({
@@ -192,10 +195,19 @@ class YouTubeDownloadService implements YouTubeProvider {
     );
   }
 
+  static final RegExp _videoIdRegex = RegExp(
+    r'(?:https?:\/\/)?(?:www\.|m\.|music\.)?(?:youtu\.be\/|youtube\.com\/(?:watch\?(?:[^\s]*&)?v=|shorts\/|live\/|embed\/|v\/))([a-zA-Z0-9_-]{11})',
+    caseSensitive: false,
+  );
+
   static String? extractVideoId(String input) {
     final trimmed = input.trim();
     if (RegExp(r'^[a-zA-Z0-9_-]{11}$').hasMatch(trimmed)) {
       return trimmed;
+    }
+    final match = _videoIdRegex.firstMatch(trimmed);
+    if (match != null) {
+      return match.group(1);
     }
     final uri = Uri.tryParse(trimmed);
     if (uri == null) return null;
@@ -212,6 +224,56 @@ class YouTubeDownloadService implements YouTubeProvider {
       }
     } else if (uri.host == 'youtu.be') {
       return uri.pathSegments.firstOrNull;
+    }
+    return null;
+  }
+
+  static String? extractTitleCandidate(String input) {
+    var text = input.trim();
+    final urlRegex = RegExp(r'https?:\/\/[^\s]+', caseSensitive: false);
+    text = text.replaceAll(urlRegex, '').trim();
+    if (text.isEmpty) return null;
+
+    text = text.replaceAll(RegExp(r'[:\s]+$'), '').trim();
+    text = text.replaceAll(RegExp(r'\s+on\s+YouTube\.?$', caseSensitive: false), '');
+    text = text.replaceAll(RegExp(r'\s+(?:на|в)\s+YouTube\.?$', caseSensitive: false), '');
+    text = text.replaceAll(RegExp(r'^(?:Watch|Смотрите|Посмотрите)\s+(?:видео\s+|video\s+)?', caseSensitive: false), '');
+    text = text.replaceAll(RegExp(r'^[\s"“«»\-_:]+|[\s"”«»\-_:]+$'), '').trim();
+
+    return text.isNotEmpty && text.length >= 2 ? text : null;
+  }
+
+  static Future<YouTubeMetadata?> fetchOEmbed(String videoId) async {
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 5)
+      ..findProxy = HttpClient.findProxyFromEnvironment;
+    try {
+      final uri = Uri.parse(
+        'https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=$videoId&format=json',
+      );
+      final request = await client.getUrl(uri);
+      final response = await request.close().timeout(const Duration(seconds: 5));
+      if (response.statusCode == 200) {
+        final body = await utf8.decoder.bind(response).join();
+        final json = jsonDecode(body);
+        if (json is Map<String, dynamic>) {
+          final title = json['title'] as String?;
+          final author = json['author_name'] as String?;
+          final thumbnail = json['thumbnail_url'] as String?;
+          if (title != null && title.trim().isNotEmpty) {
+            return YouTubeMetadata(
+              id: videoId,
+              title: title.trim(),
+              author: (author != null && author.trim().isNotEmpty) ? author.trim() : 'YouTube',
+              duration: null,
+              thumbnailUrl: thumbnail,
+            );
+          }
+        }
+      }
+    } catch (_) {
+    } finally {
+      client.close(force: true);
     }
     return null;
   }
@@ -251,11 +313,12 @@ class YouTubeDownloadService implements YouTubeProvider {
   }
 
   @override
-  Future<YouTubeMetadata?> getMetadata(String videoId) async {
+  Future<YouTubeMetadata?> getMetadata(String videoId, {SyncApi? api}) async {
+    // 1. Fast YouTubeExplode
     try {
       final video = await _yt.videos
           .get(videoId)
-          .timeout(const Duration(seconds: 10));
+          .timeout(const Duration(seconds: 6));
       return YouTubeMetadata(
         id: videoId,
         title: video.title,
@@ -263,52 +326,126 @@ class YouTubeDownloadService implements YouTubeProvider {
         duration: video.duration,
         thumbnailUrl: video.thumbnails.highResUrl,
       );
-    } catch (_) {
-      // Fallback: yt-dlp metadata if network/YouTubeExplode fails
-      final ytCmd = await _getYtDlpCommand();
-      if (ytCmd != null) {
-        try {
-          final isNative = ytCmd == 'yt-dlp';
-          final cmd = isNative ? 'yt-dlp' : 'python';
-          final cookieCandidates = [
-            File('cookies.txt'),
-            File('data/cookies.txt'),
-          ];
-          final cookieFile = cookieCandidates
-              .where((f) => f.existsSync())
-              .firstOrNull;
-          final args = [
-            if (!isNative) ...['-m', 'yt_dlp'],
-            if (cookieFile != null) ...['--cookies', cookieFile.path],
-            '--js-runtimes',
-            'node',
-            '--remote-components',
-            'ejs:github',
-            '--dump-json',
-            '--no-playlist',
-            'https://www.youtube.com/watch?v=$videoId',
-          ];
-          final res = await Process.run(
-            cmd,
-            args,
-          ).timeout(const Duration(seconds: 15));
-          if (res.exitCode == 0) {
-            final json =
-                jsonDecode(res.stdout.toString()) as Map<String, dynamic>;
-            return YouTubeMetadata(
-              id: videoId,
-              title: json['title'] as String? ?? 'YouTube Audio',
-              author: json['uploader'] as String? ?? 'YouTube',
-              duration: json['duration'] != null
-                  ? Duration(seconds: (json['duration'] as num).toInt())
-                  : null,
-              thumbnailUrl: json['thumbnail'] as String?,
-            );
-          }
-        } catch (_) {}
-      }
-      return null;
+    } catch (_) {}
+
+    // 2. Fast lightweight oEmbed (works on mobile without scraper blocks)
+    try {
+      final oembed = await fetchOEmbed(videoId);
+      if (oembed != null) return oembed;
+    } catch (_) {}
+
+    // 3. Fallback: Query Maboy server metadata proxy if available
+    if (api != null) {
+      try {
+        final res = await api.request('GET', '/youtube/metadata?video_id=$videoId');
+        final title = res['title'] as String?;
+        if (title != null && title.trim().isNotEmpty) {
+          final durationMs = (res['duration_ms'] as num?)?.toInt();
+          return YouTubeMetadata(
+            id: videoId,
+            title: title.trim(),
+            author: res['author'] as String? ?? 'YouTube',
+            duration: durationMs != null ? Duration(milliseconds: durationMs) : null,
+            thumbnailUrl: res['thumbnail_url'] as String?,
+          );
+        }
+      } catch (_) {}
     }
+
+    // 4. Fallback: yt-dlp metadata if network/YouTubeExplode fails (desktop)
+    final ytCmd = await _getYtDlpCommand();
+    if (ytCmd != null) {
+      try {
+        final isNative = ytCmd == 'yt-dlp';
+        final cmd = isNative ? 'yt-dlp' : 'python';
+        final cookieCandidates = [
+          File('cookies.txt'),
+          File('data/cookies.txt'),
+        ];
+        final cookieFile = cookieCandidates
+            .where((f) => f.existsSync())
+            .firstOrNull;
+        final args = [
+          if (!isNative) ...['-m', 'yt_dlp'],
+          if (cookieFile != null) ...['--cookies', cookieFile.path],
+          '--js-runtimes',
+          'node',
+          '--remote-components',
+          'ejs:github',
+          '--dump-json',
+          '--no-playlist',
+          'https://www.youtube.com/watch?v=$videoId',
+        ];
+        final res = await Process.run(
+          cmd,
+          args,
+        ).timeout(const Duration(seconds: 15));
+        if (res.exitCode == 0) {
+          final json =
+              jsonDecode(res.stdout.toString()) as Map<String, dynamic>;
+          return YouTubeMetadata(
+            id: videoId,
+            title: json['title'] as String? ?? 'YouTube Audio',
+            author: json['uploader'] as String? ?? 'YouTube',
+            duration: json['duration'] != null
+                ? Duration(seconds: (json['duration'] as num).toInt())
+                : null,
+            thumbnailUrl: json['thumbnail'] as String?,
+          );
+        }
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  Future<Map<String, dynamic>?> healMetadata(
+    Map<String, dynamic> track, {
+    File? audioFile,
+    SyncApi? api,
+  }) async {
+    final currentTitle = track['title'] as String? ?? '';
+    final isFallback = currentTitle.trim().isEmpty || currentTitle == 'YouTube Audio';
+    if (!isFallback) return null;
+
+    final videoId = track['source_id'] as String?;
+    if (videoId == null || videoId.isEmpty) return null;
+
+    // 1. Try reading embedded tags from downloaded audio file
+    if (audioFile != null && audioFile.existsSync()) {
+      try {
+        final parsed = LocalMetadataService.parseFile(audioFile);
+        final trackId = track['id'] as String? ?? '';
+        if (parsed.title.isNotEmpty &&
+            parsed.title != 'YouTube Audio' &&
+            parsed.title != trackId &&
+            parsed.title != 'Track') {
+          return {
+            ...track,
+            'title': parsed.title,
+            if (parsed.artist != null && parsed.artist!.isNotEmpty) 'artist': parsed.artist,
+            if (parsed.album != null && parsed.album!.isNotEmpty) 'album': parsed.album,
+            if (parsed.durationMs != null) 'duration_ms': parsed.durationMs,
+          };
+        }
+      } catch (_) {}
+    }
+
+    // 2. Fetch fresh metadata from oEmbed / server / Explode
+    final fresh = await getMetadata(videoId, api: api);
+    if (fresh != null && fresh.title.isNotEmpty && fresh.title != 'YouTube Audio') {
+      final formatted = TrackFormatter.split(
+        rawTitle: fresh.title,
+        rawArtist: fresh.author,
+      );
+      return {
+        ...track,
+        'title': formatted.title,
+        'artist': formatted.artist,
+        if (fresh.thumbnailUrl != null) 'thumbnail_url': fresh.thumbnailUrl,
+        if (fresh.duration != null) 'duration_ms': fresh.duration!.inMilliseconds,
+      };
+    }
+    return null;
   }
 
   @override
@@ -443,6 +580,7 @@ class YouTubeDownloadService implements YouTubeProvider {
           '--remote-components',
           'ejs:github',
           '-x',
+          '--embed-metadata',
           '--audio-format',
           'mp3',
           '--audio-quality',
