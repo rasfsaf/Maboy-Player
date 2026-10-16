@@ -580,35 +580,22 @@ class YouTubeDownloadService implements YouTubeProvider {
     SyncApi? api,
   }) async {
     final currentTitle = track['title'] as String? ?? '';
-    final isFallback = currentTitle.trim().isEmpty || currentTitle == 'YouTube Audio';
+    final currentArtist = track['artist'] as String? ?? '';
+    final isFallback = currentTitle.trim().isEmpty ||
+        currentTitle == 'YouTube Audio' ||
+        TrackFormatter.isUuidLike(currentTitle) ||
+        TrackFormatter.isUuidLike(currentArtist);
     if (!isFallback) return null;
 
     final videoId = track['source_id'] as String?;
     if (videoId == null || videoId.isEmpty) return null;
 
-    // 1. Try reading embedded tags from downloaded audio file
-    if (audioFile != null && audioFile.existsSync()) {
-      try {
-        final parsed = LocalMetadataService.parseFile(audioFile);
-        final trackId = track['id'] as String? ?? '';
-        if (parsed.title.isNotEmpty &&
-            parsed.title != 'YouTube Audio' &&
-            parsed.title != trackId &&
-            parsed.title != 'Track') {
-          return {
-            ...track,
-            'title': parsed.title,
-            if (parsed.artist != null && parsed.artist!.isNotEmpty) 'artist': parsed.artist,
-            if (parsed.album != null && parsed.album!.isNotEmpty) 'album': parsed.album,
-            if (parsed.durationMs != null) 'duration_ms': parsed.durationMs,
-          };
-        }
-      } catch (_) {}
-    }
-
-    // 2. Fetch fresh metadata from oEmbed / server / Explode
+    // 1. Fetch fresh metadata from YouTube (Explode, oEmbed, HTML, noembed, server proxy)
     final fresh = await getMetadata(videoId, api: api);
-    if (fresh != null && fresh.title.isNotEmpty && fresh.title != 'YouTube Audio') {
+    if (fresh != null &&
+        fresh.title.isNotEmpty &&
+        fresh.title != 'YouTube Audio' &&
+        !TrackFormatter.isUuidLike(fresh.title)) {
       final formatted = TrackFormatter.split(
         rawTitle: fresh.title,
         rawArtist: fresh.author,
@@ -616,10 +603,35 @@ class YouTubeDownloadService implements YouTubeProvider {
       return {
         ...track,
         'title': formatted.title,
-        'artist': formatted.artist,
+        'artist': formatted.artist.isNotEmpty ? formatted.artist : fresh.author,
         if (fresh.thumbnailUrl != null) 'thumbnail_url': fresh.thumbnailUrl,
         if (fresh.duration != null) 'duration_ms': fresh.duration!.inMilliseconds,
       };
+    }
+
+    // 2. Fallback: Check if local audio file has REAL embedded tags (not filename fallback)
+    if (audioFile != null && audioFile.existsSync()) {
+      try {
+        final parsed = LocalMetadataService.parseFile(audioFile);
+        final trackId = track['id'] as String? ?? '';
+        if (parsed.hasEmbeddedTags &&
+            parsed.title.isNotEmpty &&
+            parsed.title != 'YouTube Audio' &&
+            parsed.title != trackId &&
+            parsed.title != 'Track' &&
+            !TrackFormatter.isUuidLike(parsed.title)) {
+          return {
+            ...track,
+            'title': parsed.title,
+            if (parsed.artist != null &&
+                parsed.artist!.isNotEmpty &&
+                !TrackFormatter.isUuidLike(parsed.artist!))
+              'artist': parsed.artist,
+            if (parsed.album != null && parsed.album!.isNotEmpty) 'album': parsed.album,
+            if (parsed.durationMs != null) 'duration_ms': parsed.durationMs,
+          };
+        }
+      } catch (_) {}
     }
     return null;
   }

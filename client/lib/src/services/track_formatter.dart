@@ -21,6 +21,26 @@ class FormattedTrackInfo {
 class TrackFormatter {
   static final RegExp _dashPattern = RegExp(r'[-–—]');
 
+  static final RegExp _uuidPattern = RegExp(
+    r'^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$',
+  );
+
+  /// Checks if a string resembles a UUID (standard 8-4-4-4-12 hex format)
+  /// or a trailing UUID fragment from downloaded file paths.
+  static bool isUuidLike(String input) {
+    final trimmed = input.trim();
+    if (_uuidPattern.hasMatch(trimmed)) return true;
+    // Also catch chopped UUID chunks like 41c8-abff-9415f3dfdacc or 2ce5...
+    final parts = trimmed.split('-');
+    if (parts.length >= 2 && parts.every((p) => RegExp(r'^[0-9a-fA-F]+$').hasMatch(p))) {
+      final totalHexLen = parts.fold<int>(0, (sum, p) => sum + p.length);
+      if (totalHexLen >= 16 && trimmed.length <= 40) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /// Splits "Artist - Title" into separate artist and title strings.
   static FormattedTrackInfo split({
     required String rawTitle,
@@ -30,6 +50,14 @@ class TrackFormatter {
     final defaultArtist = (rawArtist != null && rawArtist.trim().isNotEmpty)
         ? rawArtist.trim()
         : '';
+
+    // If the title looks like a UUID (e.g. filename fallback $id), DO NOT split it!
+    if (isUuidLike(trimmed)) {
+      return FormattedTrackInfo(
+        title: rawTitle,
+        artist: defaultArtist,
+      );
+    }
 
     // 1. If there is no dash at all, do not touch.
     final firstDashMatch = _dashPattern.firstMatch(trimmed);

@@ -79,5 +79,24 @@ void main() {
       expect(res.artist, 'Artist');
       expect(res.title, 'Song Name - Remastered 2020');
     });
+
+    test('Never splits UUIDs or hex hash strings into artist and title', () {
+      final uuid = '2ce51234-abcd-41c8-abff-9415f3dfdacc';
+      expect(TrackFormatter.isUuidLike(uuid), isTrue);
+
+      final res = TrackFormatter.split(
+        rawTitle: uuid,
+        rawArtist: '',
+      );
+      expect(res.title, uuid);
+      expect(res.artist, '');
+
+      final resWithFallback = TrackFormatter.split(
+        rawTitle: '41c8-abff-9415f3dfdacc',
+        rawArtist: 'Original Artist',
+      );
+      expect(resWithFallback.title, '41c8-abff-9415f3dfdacc');
+      expect(resWithFallback.artist, 'Original Artist');
+    });
   });
 }

@@ -1586,7 +1586,11 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _healTrackIfFallback(Map<String, dynamic> track, File file) async {
     final title = track['title'] as String? ?? '';
-    if (title.trim().isEmpty || title == 'YouTube Audio') {
+    final artist = track['artist'] as String? ?? '';
+    if (title.trim().isEmpty ||
+        title == 'YouTube Audio' ||
+        TrackFormatter.isUuidLike(title) ||
+        TrackFormatter.isUuidLike(artist)) {
       final healed = await ytService.healMetadata(
         track,
         audioFile: file,

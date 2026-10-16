@@ -44,36 +44,12 @@ class TrackMetadataService {
       final videoId = track['source_id'] as String?;
       if (videoId == null || videoId.isEmpty) return null;
 
-      // 1. Check if the local audio file already has embedded tags
-      if (localFilePath != null) {
-        final localFile = File(localFilePath);
-        if (localFile.existsSync()) {
-          final parsed = LocalMetadataService.parseFile(
-            localFile,
-            artworkOutputPath: artworkOutputPath,
-          );
-          final trackId = track['id'] as String? ?? '';
-          if (parsed.title.isNotEmpty &&
-              parsed.title != 'YouTube Audio' &&
-              parsed.title != trackId &&
-              parsed.title != 'Track') {
-            return {
-              ...track,
-              'title': parsed.title,
-              if (parsed.artist != null && parsed.artist!.isNotEmpty)
-                'artist': parsed.artist,
-              if (parsed.album != null && parsed.album!.isNotEmpty)
-                'album': parsed.album,
-              if (parsed.durationMs != null && parsed.durationMs! > 0)
-                'duration_ms': parsed.durationMs,
-            };
-          }
-        }
-      }
-
-      // 2. Multi-tier online resolution (Explode, oEmbed, HTML Scraper, Noembed, Server)
+      // 1. Multi-tier online resolution (Explode, oEmbed, HTML Scraper, Noembed, Server)
       final meta = await ytService.getMetadata(videoId, api: api);
-      if (meta != null && meta.title.isNotEmpty && meta.title != 'YouTube Audio') {
+      if (meta != null &&
+          meta.title.isNotEmpty &&
+          meta.title != 'YouTube Audio' &&
+          !TrackFormatter.isUuidLike(meta.title)) {
         final formatted = TrackFormatter.split(
           rawTitle: meta.title,
           rawArtist: meta.author,
@@ -87,6 +63,37 @@ class TrackMetadataService {
           if (meta.duration != null && meta.duration!.inMilliseconds > 0)
             'duration_ms': meta.duration!.inMilliseconds,
         };
+      }
+
+      // 2. Fallback: Check if the local audio file actually has embedded tags
+      if (localFilePath != null) {
+        final localFile = File(localFilePath);
+        if (localFile.existsSync()) {
+          final parsed = LocalMetadataService.parseFile(
+            localFile,
+            artworkOutputPath: artworkOutputPath,
+          );
+          final trackId = track['id'] as String? ?? '';
+          if (parsed.hasEmbeddedTags &&
+              parsed.title.isNotEmpty &&
+              parsed.title != 'YouTube Audio' &&
+              parsed.title != trackId &&
+              parsed.title != 'Track' &&
+              !TrackFormatter.isUuidLike(parsed.title)) {
+            return {
+              ...track,
+              'title': parsed.title,
+              if (parsed.artist != null &&
+                  parsed.artist!.isNotEmpty &&
+                  !TrackFormatter.isUuidLike(parsed.artist!))
+                'artist': parsed.artist,
+              if (parsed.album != null && parsed.album!.isNotEmpty)
+                'album': parsed.album,
+              if (parsed.durationMs != null && parsed.durationMs! > 0)
+                'duration_ms': parsed.durationMs,
+            };
+          }
+        }
       }
     } else if (provider == 'local') {
       if (localFilePath != null) {

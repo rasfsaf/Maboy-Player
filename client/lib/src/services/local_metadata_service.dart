@@ -9,6 +9,7 @@ class ParsedTrackMetadata {
     this.album,
     this.durationMs,
     this.artworkPath,
+    this.hasEmbeddedTags = false,
   });
 
   final String title;
@@ -16,6 +17,7 @@ class ParsedTrackMetadata {
   final String? album;
   final int? durationMs;
   final String? artworkPath;
+  final bool hasEmbeddedTags;
 }
 
 class LocalMetadataService {
@@ -61,12 +63,17 @@ class LocalMetadataService {
         rawArtist: artist,
       );
 
+      final hasRealTags = (rawTitle != null && rawTitle.isNotEmpty) ||
+          (rawArtist != null && rawArtist.isNotEmpty) ||
+          (rawAlbum != null && rawAlbum.isNotEmpty);
+
       return ParsedTrackMetadata(
         title: formatted.title,
         artist: formatted.artist,
         album: album,
         durationMs: durationMs,
         artworkPath: savedArtPath,
+        hasEmbeddedTags: hasRealTags,
       );
     } catch (_) {
       final fallbackFormatted = TrackFormatter.split(rawTitle: safeFallbackTitle);
@@ -76,6 +83,7 @@ class LocalMetadataService {
         album: null,
         durationMs: null,
         artworkPath: null,
+        hasEmbeddedTags: false,
       );
     }
   }
