@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../app_controller.dart';
 import '../design_system.dart';
 import '../services/track_formatter.dart';
+import 'edit_track_dialog.dart';
 import 'marquee_text.dart';
 
 class _TrackActionsMenu extends StatelessWidget {
@@ -431,6 +432,22 @@ class TrackTile extends StatelessWidget {
                           await showAddToPlaylistDialog(context, controller, [
                             id,
                           ]);
+                        } else if (action == 'edit_track') {
+                          await showEditTrackDialog(context, controller, track);
+                        } else if (action == 'refresh_metadata') {
+                          final success = await controller.refreshTrackMetadata(id);
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(
+                                  success
+                                      ? 'Метаданные обновлены'
+                                      : 'Не удалось найти новые метаданные',
+                                ),
+                                duration: const Duration(seconds: 2),
+                              ),
+                            );
+                          }
                         } else if (action == 'remove_from_playlist') {
                           onRemoveFromPlaylist?.call();
                         } else if (action == 'delete_locally') {
@@ -446,6 +463,18 @@ class TrackTile extends StatelessWidget {
                             value: 'download_youtube',
                             child: Text('Скачать MP3'),
                           ),
+                        const PopupMenuItem(
+                          value: 'edit_track',
+                          child: Text('Редактировать трек'),
+                        ),
+                        PopupMenuItem(
+                          value: 'refresh_metadata',
+                          child: Text(
+                            track['provider'] == 'youtube'
+                                ? 'Пересобрать метаданные'
+                                : 'Перечитать теги',
+                          ),
+                        ),
                         const PopupMenuItem(
                           value: 'last',
                           child: Text('Добавить в очередь'),

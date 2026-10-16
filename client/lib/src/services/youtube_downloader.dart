@@ -243,16 +243,32 @@ class YouTubeDownloadService implements YouTubeProvider {
     return text.isNotEmpty && text.length >= 2 ? text : null;
   }
 
+  static const String _browserUserAgent =
+      'Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+
+  static String _decodeHtmlEntities(String text) {
+    return text
+        .replaceAll('&quot;', '"')
+        .replaceAll('&amp;', '&')
+        .replaceAll('&#39;', "'")
+        .replaceAll('&apos;', "'")
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&#x27;', "'")
+        .replaceAll('&#x2F;', '/');
+  }
+
   static Future<YouTubeMetadata?> fetchOEmbed(String videoId) async {
     final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 5)
+      ..connectionTimeout = const Duration(seconds: 8)
       ..findProxy = HttpClient.findProxyFromEnvironment;
     try {
       final uri = Uri.parse(
         'https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=$videoId&format=json',
       );
       final request = await client.getUrl(uri);
-      final response = await request.close().timeout(const Duration(seconds: 5));
+      request.headers.set(HttpHeaders.userAgentHeader, _browserUserAgent);
+      final response = await request.close().timeout(const Duration(seconds: 8));
       if (response.statusCode == 200) {
         final body = await utf8.decoder.bind(response).join();
         final json = jsonDecode(body);
@@ -263,10 +279,158 @@ class YouTubeDownloadService implements YouTubeProvider {
           if (title != null && title.trim().isNotEmpty) {
             return YouTubeMetadata(
               id: videoId,
-              title: title.trim(),
-              author: (author != null && author.trim().isNotEmpty) ? author.trim() : 'YouTube',
+              title: _decodeHtmlEntities(title.trim()),
+              author: (author != null && author.trim().isNotEmpty)
+                  ? _decodeHtmlEntities(author.trim())
+                  : 'YouTube',
               duration: null,
               thumbnailUrl: thumbnail,
+            );
+          }
+        }
+      }
+    } catch (_) {
+    } finally {
+      client.close(force: true);
+    }
+    return null;
+  }
+
+  /// Direct HTML scrape of the YouTube watch page. Always works without yt-dlp or scraper tokens.
+  static Future<YouTubeMetadata?> fetchHtmlMetadata(String videoId) async {
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 8)
+      ..findProxy = HttpClient.findProxyFromEnvironment;
+    try {
+      final uri = Uri.parse('https://www.youtube.com/watch?v=$videoId');
+      final request = await client.getUrl(uri);
+      request.headers.set(HttpHeaders.userAgentHeader, _browserUserAgent);
+      request.headers.set(
+        HttpHeaders.acceptLanguageHeader,
+        'ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7',
+      );
+      final response = await request.close().timeout(const Duration(seconds: 8));
+      if (response.statusCode == 200) {
+        final html = await utf8.decoder.bind(response).join();
+
+        // 1. Try extracting player response JSON
+        final playerMatch = RegExp(
+          r'ytInitialPlayerResponse\s*=\s*(\{.+?\});(?:var\s|const\s|</script>)',
+        ).firstMatch(html);
+        if (playerMatch != null) {
+          try {
+            final json =
+                jsonDecode(playerMatch.group(1)!) as Map<String, dynamic>;
+            final details = json['videoDetails'] as Map<String, dynamic>?;
+            if (details != null) {
+              final title = (details['title'] as String?)?.trim();
+              final author = (details['author'] as String?)?.trim();
+              final lengthSec = int.tryParse('${details['lengthSeconds']}');
+              final thumbs = details['thumbnail']?['thumbnails'] as List?;
+              final thumbUrl = (thumbs != null && thumbs.isNotEmpty)
+                  ? thumbs.last['url'] as String?
+                  : null;
+              if (title != null && title.isNotEmpty) {
+                return YouTubeMetadata(
+                  id: videoId,
+                  title: _decodeHtmlEntities(title),
+                  author: (author != null && author.isNotEmpty)
+                      ? _decodeHtmlEntities(author)
+                      : 'YouTube',
+                  duration: lengthSec != null && lengthSec > 0
+                      ? Duration(seconds: lengthSec)
+                      : null,
+                  thumbnailUrl: thumbUrl,
+                );
+              }
+            }
+          } catch (_) {}
+        }
+
+        // 2. Fallback: OpenGraph / Twitter meta tags
+        final metaTitleMatch = RegExp(
+          r"""<meta\s+(?:name|property)=["'](?:title|og:title|twitter:title)["']\s+content=["']([^"']+)["']""",
+          caseSensitive: false,
+        ).firstMatch(html) ?? RegExp(
+          r"""<meta\s+content=["']([^"']+)["']\s+(?:name|property)=["'](?:title|og:title|twitter:title)["']""",
+          caseSensitive: false,
+        ).firstMatch(html);
+        var title = metaTitleMatch?.group(1)?.trim();
+
+        // 3. Fallback: <title> tag
+        if (title == null || title.isEmpty) {
+          final titleTagMatch = RegExp(
+            r'<title>(.*?)<\/title>',
+            caseSensitive: false,
+          ).firstMatch(html);
+          if (titleTagMatch != null) {
+            title = titleTagMatch
+                .group(1)
+                ?.replaceAll(RegExp(r'\s*-\s*YouTube$', caseSensitive: false), '')
+                .trim();
+          }
+        }
+
+        if (title != null && title.isNotEmpty && title != 'YouTube') {
+          title = _decodeHtmlEntities(title);
+
+          final authorMatch = RegExp(
+            r"""<link\s+itemprop=["']name["']\s+content=["']([^"']+)["']""",
+            caseSensitive: false,
+          ).firstMatch(html);
+          final author = authorMatch != null
+              ? _decodeHtmlEntities(authorMatch.group(1)!.trim())
+              : 'YouTube';
+
+          final thumbMatch = RegExp(
+            r"""<meta\s+(?:name|property)=["']og:image["']\s+content=["']([^"']+)["']""",
+            caseSensitive: false,
+          ).firstMatch(html);
+          final thumbUrl = thumbMatch?.group(1);
+
+          return YouTubeMetadata(
+            id: videoId,
+            title: title,
+            author: author,
+            duration: null,
+            thumbnailUrl: thumbUrl,
+          );
+        }
+      }
+    } catch (_) {
+    } finally {
+      client.close(force: true);
+    }
+    return null;
+  }
+
+  /// Fallback to noembed.com public proxy for oEmbed
+  static Future<YouTubeMetadata?> fetchNoembed(String videoId) async {
+    final client = HttpClient()
+      ..connectionTimeout = const Duration(seconds: 6)
+      ..findProxy = HttpClient.findProxyFromEnvironment;
+    try {
+      final uri = Uri.parse(
+        'https://noembed.com/embed?url=https://www.youtube.com/watch?v=$videoId',
+      );
+      final request = await client.getUrl(uri);
+      request.headers.set(HttpHeaders.userAgentHeader, _browserUserAgent);
+      final response = await request.close().timeout(const Duration(seconds: 6));
+      if (response.statusCode == 200) {
+        final body = await utf8.decoder.bind(response).join();
+        final json = jsonDecode(body);
+        if (json is Map<String, dynamic>) {
+          final title = json['title'] as String?;
+          final author = json['author_name'] as String?;
+          if (title != null && title.trim().isNotEmpty) {
+            return YouTubeMetadata(
+              id: videoId,
+              title: _decodeHtmlEntities(title.trim()),
+              author: (author != null && author.trim().isNotEmpty)
+                  ? _decodeHtmlEntities(author.trim())
+                  : 'YouTube',
+              duration: null,
+              thumbnailUrl: json['thumbnail_url'] as String?,
             );
           }
         }
@@ -334,7 +498,19 @@ class YouTubeDownloadService implements YouTubeProvider {
       if (oembed != null) return oembed;
     } catch (_) {}
 
-    // 3. Fallback: Query Maboy server metadata proxy if available
+    // 3. Direct HTML scraping (extracts ytInitialPlayerResponse, og:title, <title>)
+    try {
+      final htmlMeta = await fetchHtmlMetadata(videoId);
+      if (htmlMeta != null) return htmlMeta;
+    } catch (_) {}
+
+    // 4. Public noembed proxy
+    try {
+      final noembedMeta = await fetchNoembed(videoId);
+      if (noembedMeta != null) return noembedMeta;
+    } catch (_) {}
+
+    // 5. Fallback: Query Maboy server metadata proxy if available
     if (api != null) {
       try {
         final res = await api.request('GET', '/youtube/metadata?video_id=$videoId');
@@ -352,7 +528,7 @@ class YouTubeDownloadService implements YouTubeProvider {
       } catch (_) {}
     }
 
-    // 4. Fallback: yt-dlp metadata if network/YouTubeExplode fails (desktop)
+    // 6. Fallback: yt-dlp metadata if network/YouTubeExplode fails (desktop)
     final ytCmd = await _getYtDlpCommand();
     if (ytCmd != null) {
       try {

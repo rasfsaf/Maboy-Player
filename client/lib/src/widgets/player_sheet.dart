@@ -6,6 +6,7 @@ import '../design_system.dart';
 import '../pages/equalizer_page.dart';
 import '../services/performance_service.dart';
 import '../services/track_formatter.dart';
+import 'edit_track_dialog.dart';
 import 'marquee_text.dart';
 import 'smart_sleep_dialog.dart';
 import 'track_tile.dart';
@@ -486,14 +487,28 @@ class PlayerSheet extends StatelessWidget {
           size: artSize,
         ),
         const SizedBox(height: 18),
-        Text(
-          formatted.title,
-          textAlign: TextAlign.center,
-          maxLines: 2,
-          overflow: TextOverflow.ellipsis,
-          style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-            fontWeight: FontWeight.w800,
-          ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Flexible(
+              child: Text(
+                formatted.title,
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Редактировать название и исполнителя',
+              iconSize: 18,
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.edit_outlined, color: MaboyColors.textMuted),
+              onPressed: () => showEditTrackDialog(context, controller, track),
+            ),
+          ],
         ),
         const SizedBox(height: 4),
         Text(
@@ -584,7 +599,7 @@ class PlayerSheet extends StatelessWidget {
     );
   }
 
-  Widget _buildTopBar(BuildContext context) => Row(
+  Widget _buildTopBar(BuildContext context, Map<String, dynamic> track) => Row(
     children: [
       IconButton(
         tooltip: 'Назад',
@@ -616,6 +631,56 @@ class PlayerSheet extends StatelessWidget {
         icon: const Icon(Icons.tune, size: 19),
         label: const Text('EQ'),
       ),
+      PopupMenuButton<String>(
+        tooltip: 'Действия с треком',
+        icon: const Icon(Icons.more_vert, size: 21),
+        onSelected: (action) async {
+          final id = track['id'] as String;
+          if (action == 'edit_track') {
+            await showEditTrackDialog(context, controller, track);
+          } else if (action == 'refresh_metadata') {
+            final success = await controller.refreshTrackMetadata(id);
+            if (context.mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(
+                    success
+                        ? 'Метаданные обновлены'
+                        : 'Не удалось найти новые метаданные',
+                  ),
+                  duration: const Duration(seconds: 2),
+                ),
+              );
+            }
+          }
+        },
+        itemBuilder: (context) => [
+          const PopupMenuItem(
+            value: 'edit_track',
+            child: Row(
+              children: [
+                Icon(Icons.edit_outlined, size: 18),
+                SizedBox(width: 8),
+                Text('Редактировать трек'),
+              ],
+            ),
+          ),
+          PopupMenuItem(
+            value: 'refresh_metadata',
+            child: Row(
+              children: [
+                const Icon(Icons.auto_awesome, size: 18),
+                const SizedBox(width: 8),
+                Text(
+                  track['provider'] == 'youtube'
+                      ? 'Пересобрать метаданные'
+                      : 'Перечитать теги',
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     ],
   );
 
@@ -642,7 +707,7 @@ class PlayerSheet extends StatelessWidget {
                     constraints: const BoxConstraints(maxWidth: 1200),
                     child: Column(
                       children: [
-                        _buildTopBar(context),
+                        _buildTopBar(context, track),
                         const SizedBox(height: 12),
                         Expanded(
                           child: Row(
@@ -704,7 +769,7 @@ class PlayerSheet extends StatelessWidget {
                   constraints: const BoxConstraints(maxWidth: 1180),
                   child: Column(
                     children: [
-                      _buildTopBar(context),
+                      _buildTopBar(context, track),
                       const SizedBox(height: 12),
                       _buildPlayerControls(context, track, artSize),
                       const SizedBox(height: 22),

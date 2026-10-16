@@ -294,6 +294,67 @@ async def fetch_youtube_metadata(video_id: str) -> dict[str, Any] | None:
     if oembed_meta:
         return oembed_meta
 
+    def _fetch_html() -> dict[str, Any] | None:
+        try:
+            url = f"https://www.youtube.com/watch?v={video_id}"
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                        "AppleWebKit/537.36 (KHTML, like Gecko) "
+                        "Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
+                },
+            )
+            with urllib.request.urlopen(req, timeout=8) as response:
+                if response.status == 200:
+                    html = response.read().decode("utf-8", errors="replace")
+                    # Try player response
+                    player_match = re.search(
+                        r"ytInitialPlayerResponse\s*=\s*(\{.+?\});(?:var\s|const\s|</script>)",
+                        html,
+                    )
+                    if player_match:
+                        try:
+                            player_data = json.loads(player_match.group(1))
+                            details = player_data.get("videoDetails", {})
+                            title = details.get("title")
+                            if title:
+                                length_sec = int(details.get("lengthSeconds", 0))
+                                thumbs = details.get("thumbnail", {}).get("thumbnails", [])
+                                thumb_url = thumbs[-1]["url"] if thumbs else None
+                                return {
+                                    "title": title.strip(),
+                                    "author": (details.get("author") or "YouTube").strip(),
+                                    "thumbnail_url": thumb_url,
+                                    "duration_ms": (length_sec * 1000) if length_sec > 0 else None,
+                                }
+                        except Exception:
+                            pass
+                    # Fallback to OpenGraph / title meta tag
+                    meta_match = re.search(
+                        r'<meta\s+(?:name|property)=["\'](?:title|og:title)["\']\s+content=["\']([^"\']+)["\']',
+                        html,
+                    )
+                    if meta_match:
+                        title = meta_match.group(1).strip()
+                        if title and title != "YouTube":
+                            return {
+                                "title": title,
+                                "author": "YouTube",
+                                "thumbnail_url": None,
+                                "duration_ms": None,
+                            }
+        except Exception:
+            pass
+        return None
+
+    html_meta = await asyncio.to_thread(_fetch_html)
+    if html_meta:
+        return html_meta
+
     try:
         task_cookie = _cookie_file()
         args = [

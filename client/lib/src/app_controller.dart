@@ -28,6 +28,7 @@ import 'services/youtube_downloader.dart';
 import 'services/youtube_playlist_service.dart';
 import 'services/bass_boost_service.dart';
 import 'services/performance_service.dart';
+import 'services/track_metadata_service.dart';
 
 String newId() {
   final bytes = List<int>.generate(16, (_) => Random.secure().nextInt(256));
@@ -61,6 +62,7 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
 
   final MaboyAudioPlayer player = MaboyAudioPlayer();
   final YouTubeDownloadService ytService = YouTubeDownloadService();
+  final TrackMetadataService trackMetadataService = const TrackMetadataService();
   final CaptchaSolverService captchaSolver = CaptchaSolverService();
   final P2pSyncService p2pSync = const P2pSyncService();
   final YouTubePlaylistService ytPlaylistService = YouTubePlaylistService();
@@ -1594,6 +1596,49 @@ class AppController extends ChangeNotifier with WidgetsBindingObserver {
         await mutate('track.upsert', healed);
       }
     }
+  }
+
+  Future<bool> refreshTrackMetadata(String trackId) async {
+    final track = tracks.where((t) => t['id'] == trackId).firstOrNull;
+    if (track == null) return false;
+    final localPath = localFiles[trackId] ?? originalFiles[trackId];
+    final musicDir = await storageService.getTargetMusicDirectory();
+    final artPath = '${musicDir.path}/$trackId.jpg';
+
+    final updated = await trackMetadataService.refreshTrackMetadata(
+      track: track,
+      ytService: ytService,
+      api: token != null ? api : null,
+      localFilePath: localPath,
+      artworkOutputPath: artPath,
+    );
+
+    if (updated != null) {
+      if (File(artPath).existsSync()) {
+        artworkFiles[trackId] = artPath;
+      }
+      await mutate('track.upsert', updated);
+      _showTemporaryTransferStatus('Метаданные обновлены: ${updated['title']}');
+      return true;
+    }
+    _showTemporaryTransferStatus('Не удалось получить новые метаданные');
+    return false;
+  }
+
+  Future<void> updateTrackMetadata(
+    String trackId, {
+    required String title,
+    String? artist,
+  }) async {
+    final track = tracks.where((t) => t['id'] == trackId).firstOrNull;
+    if (track == null) return;
+    final updated = trackMetadataService.buildManualMetadataUpdate(
+      track: track,
+      title: title,
+      artist: artist,
+    );
+    await mutate('track.upsert', updated);
+    _showTemporaryTransferStatus('Трек обновлён: ${updated['title']}');
   }
 
   Future<void> handleIncomingShare(
