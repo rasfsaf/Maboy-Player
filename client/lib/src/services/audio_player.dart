@@ -376,13 +376,14 @@ class MaboyAudioPlayer {
         ),
       );
 
+      // Headroom attenuation is reserved strictly for multi-band equalizer presets
+      // to maintain consistent overall loudness across bands and prevent clipping.
+      // Bass boost must NEVER reduce master volumeGain; doing so would cancel out
+      // the low-end boost and muffle the track.
       final eqMaxBoost = _equalizerEnabled
           ? _equalizerGains.fold<double>(0, (a, b) => a > b ? a : b)
           : 0.0;
-      final bassBoost =
-          (_bassBoostEnabled && _bassBoostGain > 0) ? _bassBoostGain : 0.0;
-      final totalBoost = math.max(eqMaxBoost, bassBoost);
-      await player.setVolumeGain(-totalBoost.clamp(0, 18).toDouble());
+      await player.setVolumeGain(-eqMaxBoost.clamp(0, 12).toDouble());
     } catch (e, st) {
       debugPrint('Failed to apply audio effects safely: $e\n$st');
     }
