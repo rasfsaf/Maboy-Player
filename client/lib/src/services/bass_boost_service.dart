@@ -69,6 +69,13 @@ const builtInBassBoostPresets = <BassBoostPreset>[
     gainDb: 12.0,
   ),
   BassBoostPreset(
+    id: 'synth',
+    name: 'Синт',
+    description: 'Плотный текстурный бас для Synthwave, электроники и аналоговых синтов (+9 dB на 125 Гц)',
+    frequency: 125.0,
+    gainDb: 9.0,
+  ),
+  BassBoostPreset(
     id: 'mega_bass',
     name: 'Мега Бас',
     description: 'Максимальный напор для вечеринок и любителей мощных низов (+15 dB на 100 Гц)',

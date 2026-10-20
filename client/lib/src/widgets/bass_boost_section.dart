@@ -419,6 +419,9 @@ class _BassBoostSectionState extends State<BassBoostSection> {
                     case 'deep_sub':
                       icon = Icons.graphic_eq;
                       break;
+                    case 'synth':
+                      icon = Icons.piano;
+                      break;
                     case 'mega_bass':
                       icon = Icons.speaker;
                       break;

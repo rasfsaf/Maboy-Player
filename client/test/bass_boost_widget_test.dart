@@ -123,6 +123,18 @@ void main() {
       expect(subConfig.gainDb, 12.0);
       expect(subConfig.presetId, 'deep_sub');
       expect(find.text(subConfig.matchingPreset!.description), findsOneWidget);
+
+      // Tap "Синт (+9 dB)" preset chip
+      final synthChip = find.text('Синт (+9 dB)');
+      expect(synthChip, findsOneWidget);
+      await tester.tap(synthChip);
+      await tester.pumpAndSettle();
+
+      final synthConfig = controller.bassBoostService.globalConfig;
+      expect(synthConfig.frequency, 125.0);
+      expect(synthConfig.gainDb, 9.0);
+      expect(synthConfig.presetId, 'synth');
+      expect(find.text(synthConfig.matchingPreset!.description), findsOneWidget);
     });
   });
 }
