@@ -78,5 +78,51 @@ void main() {
       expect(controller.bassBoostService.globalConfig.frequency, 20.0);
       expect(tester.widget<TextField>(textFieldFinder).controller!.text, '20');
     });
+
+    testWidgets('preset chips activate bass boost and apply tuned frequency and gain', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: buildMaboyTheme(),
+          home: Scaffold(
+            body: SingleChildScrollView(
+              child: BassBoostSection(controller: controller),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      // Initially bass boost is disabled
+      expect(controller.bassBoostService.globalConfig.enabled, isFalse);
+
+      // Tap "Панч (+9 dB)" preset chip
+      final punchChip = find.text('Панч (+9 dB)');
+      expect(punchChip, findsOneWidget);
+      await tester.tap(punchChip);
+      await tester.pumpAndSettle();
+
+      // Bass boost should be enabled and set to 80 Hz and 9 dB
+      final config = controller.bassBoostService.globalConfig;
+      expect(config.enabled, isTrue);
+      expect(config.frequency, 80.0);
+      expect(config.gainDb, 9.0);
+      expect(config.presetId, 'punch');
+      expect(config.matchingPreset?.name, 'Панч');
+
+      // The description should be displayed
+      expect(find.text(config.matchingPreset!.description), findsOneWidget);
+
+      // Tap "Глубокий саб (+12 dB)" preset chip
+      final subChip = find.text('Глубокий саб (+12 dB)');
+      expect(subChip, findsOneWidget);
+      await tester.tap(subChip);
+      await tester.pumpAndSettle();
+
+      final subConfig = controller.bassBoostService.globalConfig;
+      expect(subConfig.frequency, 50.0);
+      expect(subConfig.gainDb, 12.0);
+      expect(subConfig.presetId, 'deep_sub');
+      expect(find.text(subConfig.matchingPreset!.description), findsOneWidget);
+    });
   });
 }

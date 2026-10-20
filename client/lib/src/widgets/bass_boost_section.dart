@@ -90,7 +90,7 @@ class _BassBoostSectionState extends State<BassBoostSection> {
     _updateConfig(
       bassService,
       isGlobal,
-      currentConfig.copyWith(frequency: validFreq),
+      currentConfig.copyWith(frequency: validFreq, clearPresetId: true),
     );
   }
 
@@ -395,6 +395,100 @@ class _BassBoostSectionState extends State<BassBoostSection> {
 
               const SizedBox(height: 18),
 
+              // Presets section
+              Text(
+                'Готовые пресеты:',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: MaboyColors.textMuted,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 1.1,
+                    ),
+              ),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: builtInBassBoostPresets.map((preset) {
+                  final isSelected =
+                      currentConfig.matchingPreset?.id == preset.id;
+                  IconData icon;
+                  switch (preset.id) {
+                    case 'punch':
+                      icon = Icons.bolt;
+                      break;
+                    case 'deep_sub':
+                      icon = Icons.graphic_eq;
+                      break;
+                    case 'mega_bass':
+                      icon = Icons.speaker;
+                      break;
+                    case 'warmth':
+                      icon = Icons.wb_sunny;
+                      break;
+                    case 'subtle':
+                    default:
+                      icon = Icons.spa;
+                      break;
+                  }
+                  return ChoiceChip(
+                    selected: isSelected,
+                    showCheckmark: false,
+                    avatar: Icon(
+                      icon,
+                      size: 16,
+                      color: isSelected ? Colors.white : MaboyColors.textMuted,
+                    ),
+                    label: Text(
+                      '${preset.name} (+${preset.gainDb.toInt()} dB)',
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight:
+                            isSelected ? FontWeight.w700 : FontWeight.w500,
+                      ),
+                    ),
+                    onSelected: (_) {
+                      bassService.applyPreset(
+                        preset,
+                        playlistId: _selectedPlaylistId,
+                      );
+                    },
+                  );
+                }).toList(),
+              ),
+              if (currentConfig.matchingPreset != null) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: MaboyColors.primary.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                      color: MaboyColors.primary.withValues(alpha: 0.3),
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.info_outline,
+                          size: 15, color: MaboyColors.primary),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Text(
+                          currentConfig.matchingPreset!.description,
+                          style: const TextStyle(
+                            fontSize: 11,
+                            color: MaboyColors.text,
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+
+              const SizedBox(height: 18),
+
               // Frequency and Boost Level Controls
               Opacity(
                 opacity: currentConfig.enabled ? 1.0 : 0.45,
@@ -467,7 +561,10 @@ class _BassBoostSectionState extends State<BassBoostSection> {
                                           _updateConfig(
                                             bassService,
                                             isGlobal,
-                                            currentConfig.copyWith(frequency: parsed),
+                                            currentConfig.copyWith(
+                                              frequency: parsed,
+                                              clearPresetId: true,
+                                            ),
                                           );
                                         }
                                       },
@@ -680,7 +777,10 @@ class _BassBoostSectionState extends State<BassBoostSection> {
                                     _updateConfig(
                                       bassService,
                                       isGlobal,
-                                      currentConfig.copyWith(gainDb: newGain),
+                                      currentConfig.copyWith(
+                                        gainDb: newGain,
+                                        clearPresetId: true,
+                                      ),
                                     );
                                   },
                                 ),
@@ -704,7 +804,10 @@ class _BassBoostSectionState extends State<BassBoostSection> {
                           _updateConfig(
                             bassService,
                             isGlobal,
-                            currentConfig.copyWith(gainDb: val),
+                            currentConfig.copyWith(
+                              gainDb: val,
+                              clearPresetId: true,
+                            ),
                           );
                         },
                       ),

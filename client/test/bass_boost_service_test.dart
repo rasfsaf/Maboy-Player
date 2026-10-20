@@ -192,5 +192,64 @@ void main() {
       expect(playlistConfig.frequency, 20.0);
       expect(playlistConfig.gainDb, 24.0);
     });
+
+    test('builtInBassBoostPresets contains distinct presets with valid frequencies and gains', () {
+      expect(builtInBassBoostPresets.length, greaterThanOrEqualTo(5));
+      final ids = builtInBassBoostPresets.map((p) => p.id).toSet();
+      expect(ids.length, equals(builtInBassBoostPresets.length));
+      for (final preset in builtInBassBoostPresets) {
+        expect(preset.frequency, inInclusiveRange(20.0, 20000.0));
+        expect(preset.gainDb, inInclusiveRange(1.0, 24.0));
+        expect(preset.name, isNotEmpty);
+        expect(preset.description, isNotEmpty);
+      }
+    });
+
+    test('matchingPreset resolves correctly by presetId and values', () {
+      final punch = builtInBassBoostPresets.firstWhere((p) => p.id == 'punch');
+      final config = BassBoostConfig(
+        enabled: true,
+        frequency: punch.frequency,
+        gainDb: punch.gainDb,
+        presetId: punch.id,
+      );
+      expect(config.matchingPreset, equals(punch));
+
+      // Also resolves even if presetId was omitted
+      final configNoId = BassBoostConfig(
+        enabled: true,
+        frequency: punch.frequency,
+        gainDb: punch.gainDb,
+      );
+      expect(configNoId.matchingPreset, equals(punch));
+
+      // Custom value does not match
+      final custom = BassBoostConfig(
+        enabled: true,
+        frequency: 77.0,
+        gainDb: 11.0,
+      );
+      expect(custom.matchingPreset, isNull);
+    });
+
+    test('applyPreset enables bass boost, applies preset parameters, and persists', () async {
+      final service = BassBoostService();
+      await service.init();
+
+      final megaBass = builtInBassBoostPresets.firstWhere((p) => p.id == 'mega_bass');
+      await service.applyPreset(megaBass);
+
+      expect(service.globalConfig.enabled, isTrue);
+      expect(service.globalConfig.frequency, megaBass.frequency);
+      expect(service.globalConfig.gainDb, megaBass.gainDb);
+      expect(service.globalConfig.presetId, megaBass.id);
+      expect(service.globalConfig.matchingPreset, equals(megaBass));
+
+      // Re-init service and verify persistence
+      final reloaded = BassBoostService();
+      await reloaded.init();
+      expect(reloaded.globalConfig.enabled, isTrue);
+      expect(reloaded.globalConfig.matchingPreset, equals(megaBass));
+    });
   });
 }

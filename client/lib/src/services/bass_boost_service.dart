@@ -28,38 +28,101 @@ const bassBoostLevels = <double>[
   24,
 ];
 
+/// A pre-tuned bass enhancement preset.
+class BassBoostPreset {
+  const BassBoostPreset({
+    required this.id,
+    required this.name,
+    required this.description,
+    required this.frequency,
+    required this.gainDb,
+  });
+
+  final String id;
+  final String name;
+  final String description;
+  final double frequency;
+  final double gainDb;
+}
+
+/// Built-in acoustic presets tuned for different genres and listening tastes.
+const builtInBassBoostPresets = <BassBoostPreset>[
+  BassBoostPreset(
+    id: 'subtle',
+    name: 'Лёгкий',
+    description: 'Мягкое и аккуратное утепление низов без гула (+6 dB на 100 Гц)',
+    frequency: 100.0,
+    gainDb: 6.0,
+  ),
+  BassBoostPreset(
+    id: 'punch',
+    name: 'Панч',
+    description: 'Плотный акцент на ударной бочке для клубной музыки и рока (+9 dB на 80 Гц)',
+    frequency: 80.0,
+    gainDb: 9.0,
+  ),
+  BassBoostPreset(
+    id: 'deep_sub',
+    name: 'Глубокий саб',
+    description: 'Массивный вибрирующий саб-бас и 808 для рэпа, фонка и трэпа (+12 dB на 50 Гц)',
+    frequency: 50.0,
+    gainDb: 12.0,
+  ),
+  BassBoostPreset(
+    id: 'mega_bass',
+    name: 'Мега Бас',
+    description: 'Максимальный напор для вечеринок и любителей мощных низов (+15 dB на 100 Гц)',
+    frequency: 100.0,
+    gainDb: 15.0,
+  ),
+  BassBoostPreset(
+    id: 'warmth',
+    name: 'Тёплый',
+    description: 'Широкий объёмный бас для классического рока, джаза и ретро (+6 dB на 150 Гц)',
+    frequency: 150.0,
+    gainDb: 6.0,
+  ),
+];
+
 /// Configuration for bass boost DSP stage.
 class BassBoostConfig {
   const BassBoostConfig({
     this.enabled = false,
     this.frequency = 150.0,
     this.gainDb = 0.0,
+    this.presetId,
   });
 
   final bool enabled;
   final double frequency;
   final double gainDb;
+  final String? presetId;
 
   BassBoostConfig copyWith({
     bool? enabled,
     double? frequency,
     double? gainDb,
+    String? presetId,
+    bool clearPresetId = false,
   }) => BassBoostConfig(
     enabled: enabled ?? this.enabled,
     frequency: frequency != null
         ? (frequency < 20.0 ? 20.0 : frequency)
         : this.frequency,
     gainDb: gainDb ?? this.gainDb,
+    presetId: clearPresetId ? null : (presetId ?? this.presetId),
   );
 
   Map<String, dynamic> toJson() => {
     'enabled': enabled,
     'frequency': frequency,
     'gainDb': gainDb,
+    if (presetId != null) 'presetId': presetId,
   };
 
   factory BassBoostConfig.fromJson(Map<String, dynamic> json) {
     final enabled = json['enabled'] == true;
+    final presetId = json['presetId'] as String?;
     final rawFreq = json['frequency'];
     final frequency = (rawFreq is num && rawFreq >= 20.0 && rawFreq <= 20000.0)
         ? rawFreq.toDouble()
@@ -73,7 +136,25 @@ class BassBoostConfig {
       enabled: enabled,
       frequency: frequency,
       gainDb: gainDb,
+      presetId: presetId,
     );
+  }
+
+  /// Resolves the matching built-in preset or null if customized.
+  BassBoostPreset? get matchingPreset {
+    if (presetId != null) {
+      for (final p in builtInBassBoostPresets) {
+        if (p.id == presetId && p.frequency == frequency && p.gainDb == gainDb) {
+          return p;
+        }
+      }
+    }
+    for (final p in builtInBassBoostPresets) {
+      if (p.frequency == frequency && p.gainDb == gainDb) {
+        return p;
+      }
+    }
+    return null;
   }
 
   @override
@@ -83,10 +164,11 @@ class BassBoostConfig {
           runtimeType == other.runtimeType &&
           enabled == other.enabled &&
           frequency == other.frequency &&
-          gainDb == other.gainDb;
+          gainDb == other.gainDb &&
+          presetId == other.presetId;
 
   @override
-  int get hashCode => Object.hash(enabled, frequency, gainDb);
+  int get hashCode => Object.hash(enabled, frequency, gainDb, presetId);
 }
 
 /// Manages global and per-playlist bass boost configurations.
@@ -148,6 +230,22 @@ class BassBoostService extends ChangeNotifier {
   /// Returns the specific configuration for a playlist, or null if inheriting global.
   BassBoostConfig? getPlaylistConfig(String playlistId) =>
       _playlistConfigs[playlistId];
+
+  /// Applies a preset to global or playlist scope.
+  Future<void> applyPreset(BassBoostPreset preset, {String? playlistId}) async {
+    final current = resolveEffectiveConfig(playlistId);
+    final updated = current.copyWith(
+      enabled: true,
+      frequency: preset.frequency,
+      gainDb: preset.gainDb,
+      presetId: preset.id,
+    );
+    if (playlistId == null) {
+      await setGlobalConfig(updated);
+    } else {
+      await setPlaylistConfig(playlistId, updated);
+    }
+  }
 
   /// Updates global bass boost settings.
   Future<void> setGlobalConfig(BassBoostConfig config) async {
