@@ -846,6 +846,7 @@ class _DecorativeProgressCover extends StatelessWidget {
                           track: track,
                           size: size,
                           radius: size / 2,
+                          zoomFactor: 1.35,
                         ),
                       ),
                     ),

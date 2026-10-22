@@ -161,6 +161,7 @@ class TrackCover extends StatelessWidget {
     this.size = 44,
     this.radius = 6,
     this.downsampleForBlur = false,
+    this.zoomFactor,
   });
 
   final AppController controller;
@@ -168,6 +169,7 @@ class TrackCover extends StatelessWidget {
   final double size;
   final double radius;
   final bool downsampleForBlur;
+  final double? zoomFactor;
 
   @override
   Widget build(BuildContext context) {
@@ -176,9 +178,17 @@ class TrackCover extends StatelessWidget {
     final thumbUrl = track['thumbnail_url'] as String?;
 
     final dpr = MediaQuery.maybeDevicePixelRatioOf(context) ?? 2.0;
+    final effectiveZoom = zoomFactor ??
+        ((thumbUrl != null &&
+                (thumbUrl.contains('hqdefault') ||
+                    thumbUrl.contains('sddefault') ||
+                    thumbUrl.contains('mqdefault')))
+            ? 1.35
+            : 1.0);
+
     final cacheDim = downsampleForBlur
         ? 48
-        : (size * dpr).round().clamp(48, 512);
+        : (size * effectiveZoom * dpr).round().clamp(48, 512);
 
     Widget content;
     if (localArt != null && localArt.isNotEmpty) {
@@ -205,6 +215,13 @@ class TrackCover extends StatelessWidget {
       );
     } else {
       content = _fallback();
+    }
+
+    if (effectiveZoom != 1.0) {
+      content = Transform.scale(
+        scale: effectiveZoom,
+        child: content,
+      );
     }
 
     return ClipRRect(
