@@ -359,7 +359,9 @@ class MaboyAudioPlayer {
         bass = mpv.BassSettings(
           enabled: true,
           frequency: _bassBoostFrequency,
+          f: _bassBoostFrequency,
           gain: _bassBoostGain,
+          g: _bassBoostGain,
         );
       }
 
