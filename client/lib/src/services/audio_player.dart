@@ -355,11 +355,12 @@ class MaboyAudioPlayer {
       }
 
       mpv.EqualizerSettings? bassEq;
-      mpv.AlimiterSettings? limiter;
       if (_bassBoostEnabled && _bassBoostGain > 0) {
         // Industry-standard Peaking Bell parametric EQ with Q=1.0.
         // Directly punches the selected kick/bass body frequency without muddying
         // sub-rumble (< 40 Hz) or leaking into mids.
+        // No limiter / compressors attached: preserves pure dynamic headroom
+        // and raw punch without ducking master loudness.
         bassEq = mpv.EqualizerSettings(
           enabled: true,
           frequency: _bassBoostFrequency,
@@ -370,14 +371,6 @@ class MaboyAudioPlayer {
           t: mpv.EqualizerWidthType.q,
           width: 1.0,
           w: 1.0,
-        );
-        // Fast-attack, transparent limiter to prevent digital clipping / distortion
-        // on high bass gain while preserving transient punch and full volume.
-        limiter = const mpv.AlimiterSettings(
-          enabled: true,
-          attack: 5.0,
-          release: 50.0,
-          limit: 1.0,
         );
       }
 
@@ -391,7 +384,6 @@ class MaboyAudioPlayer {
         mpv.AudioEffects(
           firequalizer: firequalizer,
           equalizer: bassEq,
-          alimiter: limiter,
         ),
       );
 
