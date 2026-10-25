@@ -354,18 +354,34 @@ class MaboyAudioPlayer {
         );
       }
 
-      mpv.BassSettings? bass;
+      mpv.EqualizerSettings? bassEq;
+      mpv.AlimiterSettings? limiter;
       if (_bassBoostEnabled && _bassBoostGain > 0) {
-        bass = mpv.BassSettings(
+        // Industry-standard Peaking Bell parametric EQ with Q=1.0.
+        // Directly punches the selected kick/bass body frequency without muddying
+        // sub-rumble (< 40 Hz) or leaking into mids.
+        bassEq = mpv.EqualizerSettings(
           enabled: true,
           frequency: _bassBoostFrequency,
           f: _bassBoostFrequency,
           gain: _bassBoostGain,
           g: _bassBoostGain,
+          width_type: mpv.EqualizerWidthType.q,
+          t: mpv.EqualizerWidthType.q,
+          width: 1.0,
+          w: 1.0,
+        );
+        // Fast-attack, transparent limiter to prevent digital clipping / distortion
+        // on high bass gain while preserving transient punch and full volume.
+        limiter = const mpv.AlimiterSettings(
+          enabled: true,
+          attack: 5.0,
+          release: 50.0,
+          limit: 1.0,
         );
       }
 
-      if (firequalizer == null && bass == null) {
+      if (firequalizer == null && bassEq == null) {
         await player.setAudioEffects(const mpv.AudioEffects());
         await player.setVolumeGain(0);
         return;
@@ -374,7 +390,8 @@ class MaboyAudioPlayer {
       await player.setAudioEffects(
         mpv.AudioEffects(
           firequalizer: firequalizer,
-          bass: bass,
+          equalizer: bassEq,
+          alimiter: limiter,
         ),
       );
 
